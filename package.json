@@ -1,0 +1,13 @@
+{
+  "name": "jira-agent",
+  "main": "agent.ts",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@types/node": "^24.5.2",
+    "ai": "^5.0.56",
+    "blink": "^0.1.54",
+    "esbuild": "^0.25.10",
+    "zod": "^4.1.11"
+  }
+}
