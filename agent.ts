@@ -372,6 +372,28 @@ function normalizeDueDate(input?: string): string | undefined {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+// New: minimal helpers for Automation webhook handling
+const JIRA_AUTOMATION_SECRET = env("JIRA_AUTOMATION_SECRET");
+const JIRA_SERVICE_ACCOUNT_ID = env("JIRA_SERVICE_ACCOUNT_ID");
+let cachedServiceAccountId: string | undefined;
+
+async function getServiceAccountId(): Promise<string> {
+  if (JIRA_SERVICE_ACCOUNT_ID) return JIRA_SERVICE_ACCOUNT_ID;
+  if (cachedServiceAccountId) return cachedServiceAccountId;
+  const me = await getJson<JiraMyself>(`/rest/api/3/myself`);
+  cachedServiceAccountId = me.accountId;
+  return cachedServiceAccountId;
+}
+
+function adfContainsMention(node: any, accountId: string): boolean {
+  if (!node) return false;
+  if (Array.isArray(node))
+    return node.some((n) => adfContainsMention(n, accountId));
+  if (node.type === "mention" && node.attrs?.id === accountId) return true;
+  if (node.content) return adfContainsMention(node.content, accountId);
+  return false;
+}
+
 export default blink.agent({
   async sendMessages({ messages }) {
     return streamText({
@@ -1033,5 +1055,84 @@ Use the Jira tools provided when given a Jira link.`,
         }),
       },
     });
+  },
+  // New: webhook ingress for Jira Automation (Issue commented)
+  async onRequest(request) {
+    const url = new URL(request.url);
+    if (!url.pathname.startsWith("/jira")) {
+      return new Response("OK", { status: 200 });
+    }
+
+    // Verify shared secret if configured
+    const authHeader =
+      request.headers.get("authorization") ||
+      request.headers.get("Authorization");
+    if (
+      JIRA_AUTOMATION_SECRET &&
+      authHeader !== `Bearer ${JIRA_AUTOMATION_SECRET}`
+    ) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+
+    let payload: any;
+    try {
+      payload = await request.json();
+    } catch (_) {
+      return new Response("Bad Request", { status: 400 });
+    }
+
+    // Expect custom data from Automation like:
+    // {
+    //   "issue": { "key": "ABC-123" },
+    //   "comment": {
+    //     "author": { "accountId": "..." },
+    //     "body": <ADF object or JSON string of ADF>
+    //   }
+    // }
+    const issueKey: string | undefined = payload?.issue?.key ?? payload?.key;
+    const comment = payload?.comment;
+    if (!issueKey || !comment) {
+      // Nothing to do
+      return new Response("OK", { status: 200 });
+    }
+
+    requireEnv();
+    const serviceAccountId = await getServiceAccountId();
+
+    const authorId: string | undefined =
+      comment?.author?.accountId ?? comment?.authorId;
+    if (authorId && authorId === serviceAccountId) {
+      // Avoid loops
+      return new Response("OK", { status: 200 });
+    }
+
+    // Parse ADF body
+    let adfBody: any = comment.body;
+    if (typeof adfBody === "string") {
+      try {
+        adfBody = JSON.parse(adfBody);
+      } catch (_) {
+        // Not ADF JSON; ignore
+        adfBody = undefined;
+      }
+    }
+
+    if (!adfBody || !adfContainsMention(adfBody, serviceAccountId)) {
+      return new Response("OK", { status: 200 });
+    }
+
+    // Compose a minimal acknowledgement reply mentioning the commenter
+    const reply = buildAdfComment(
+      "Thanks for the mention.",
+      authorId ? [{ accountId: authorId }] : undefined,
+    );
+
+    try {
+      await postJson(`/rest/api/3/issue/${issueKey}/comment`, reply);
+    } catch (err) {
+      return new Response("Upstream Jira error", { status: 502 });
+    }
+
+    return new Response("OK", { status: 200 });
   },
 });
