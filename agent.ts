@@ -3,7 +3,8 @@ import * as blink from "blink";
 import { z } from "zod";
 
 // Jira helpers
-const JIRA_BASE_URL = process.env.JIRA_BASE_URL?.replace(/\/+$/, "");
+const JIRA_SITE_BASE = process.env.JIRA_BASE_URL?.replace(/\/+$/, "");
+const JIRA_CLOUD_ID = process.env.JIRA_CLOUD_ID;
 const JIRA_EMAIL = process.env.JIRA_EMAIL;
 const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
 
@@ -20,9 +21,9 @@ type JiraCommentCreated = {
 };
 
 function requireEnv() {
-  if (!JIRA_BASE_URL || !JIRA_EMAIL || !JIRA_API_TOKEN) {
+  if (!JIRA_CLOUD_ID || !JIRA_EMAIL || !JIRA_API_TOKEN) {
     throw new Error(
-      "Missing Jira env. Set JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN in .env.local/.env.production",
+      "Missing Jira env. Set JIRA_CLOUD_ID, JIRA_EMAIL, JIRA_API_TOKEN in .env.local/.env.production",
     );
   }
 }
@@ -48,12 +49,17 @@ function parseIssueKeyFromUrl(issueUrl: string): string {
   throw new Error("Unable to parse issue key from URL");
 }
 
+function apiBase(): string {
+  if (!JIRA_CLOUD_ID) throw new Error("JIRA_CLOUD_ID is required");
+  return `https://api.atlassian.com/ex/jira/${JIRA_CLOUD_ID}`;
+}
+
 async function getJson<T>(
   path: string,
   params?: Record<string, string>,
 ): Promise<T> {
   requireEnv();
-  const url = new URL(path, JIRA_BASE_URL);
+  const url = new URL(path, apiBase());
   if (params)
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   const res = await fetch(url.toString(), { headers: authHeaders() });
@@ -63,7 +69,7 @@ async function getJson<T>(
 
 async function postJson<T>(path: string, body: any): Promise<T> {
   requireEnv();
-  const url = new URL(path, JIRA_BASE_URL);
+  const url = new URL(path, apiBase());
   const res = await fetch(url.toString(), {
     method: "POST",
     headers: authHeaders(),
