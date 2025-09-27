@@ -22,6 +22,40 @@ type JiraCommentCreated = {
   author?: { displayName?: string };
 };
 
+type JiraComment = {
+  author: string | undefined;
+  body: string;
+  created: string;
+};
+
+type NormalizedIssue = {
+  key: string;
+  url: string | null;
+  summary: string | undefined;
+  status: string | undefined;
+  type: string | undefined;
+  priority?: string | undefined;
+  labels: string[];
+  components: string[];
+  assignee?: { displayName?: string } | undefined;
+  reporter?: { displayName?: string } | undefined;
+  parentKey?: string | undefined;
+  description?: { text: string; rendered?: string };
+  subtasks: { key: string; summary?: string; status?: string }[];
+  linkedIssues: {
+    key: string;
+    type?: string;
+    direction: "inward" | "outward";
+  }[];
+  comments?: JiraComment[];
+  attachments?: {
+    filename: string;
+    size: number;
+    mimeType?: string;
+    contentUrl: string;
+  }[];
+};
+
 function requireEnv() {
   if (!JIRA_CLOUD_ID || !JIRA_EMAIL || !JIRA_API_TOKEN) {
     throw new Error(
@@ -85,6 +119,103 @@ async function postJson<T>(path: string, body: any): Promise<T> {
   });
   if (!res.ok) throw new Error(`Jira API ${res.status}: ${await res.text()}`);
   return (await res.json()) as T;
+}
+
+function stripHtml(html?: string): string {
+  if (!html) return "";
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function fetchIssueNormalized(
+  key: string,
+  opts?: {
+    includeComments?: boolean;
+    maxComments?: number;
+    includeAttachments?: boolean;
+  },
+) {
+  const fields = [
+    "summary",
+    "description",
+    "issuetype",
+    "priority",
+    "labels",
+    "components",
+    "status",
+    "assignee",
+    "reporter",
+    "parent",
+    "attachment",
+    "subtasks",
+  ];
+  const issue = await getJson<any>(`/rest/api/3/issue/${key}`, {
+    fields: fields.join(","),
+    expand: "renderedFields,issuelinks,subtasks",
+  });
+
+  const normalized: NormalizedIssue = {
+    key: issue.key,
+    url: JIRA_SITE_BASE ? `${JIRA_SITE_BASE}/browse/${issue.key}` : null,
+    summary: issue.fields?.summary,
+    status: issue.fields?.status?.name,
+    type: issue.fields?.issuetype?.name,
+    priority: issue.fields?.priority?.name,
+    labels: issue.fields?.labels ?? [],
+    components: (issue.fields?.components ?? [])
+      .map((c: any) => c.name)
+      .filter(Boolean),
+    assignee: issue.fields?.assignee
+      ? { displayName: issue.fields.assignee.displayName }
+      : undefined,
+    reporter: issue.fields?.reporter
+      ? { displayName: issue.fields.reporter.displayName }
+      : undefined,
+    parentKey: issue.fields?.parent?.key,
+    description: {
+      text: stripHtml(issue.renderedFields?.description),
+      rendered: issue.renderedFields?.description,
+    },
+    subtasks: (issue.fields?.subtasks ?? []).map((s: any) => ({
+      key: s.key,
+      summary: s.fields?.summary,
+      status: s.fields?.status?.name,
+    })),
+    linkedIssues: (issue.fields?.issuelinks ?? [])
+      .map((l: any) => ({
+        key: l.outwardIssue?.key ?? l.inwardIssue?.key,
+        type: l.type?.name,
+        direction: l.outwardIssue ? "outward" : "inward",
+      }))
+      .filter((x: any) => x.key),
+  };
+
+  if (opts?.includeComments) {
+    const max = Math.min(Math.max(opts.maxComments ?? 50, 1), 200);
+    const comments = await getJson<any>(`/rest/api/3/issue/${key}/comment`, {
+      orderBy: "created",
+      maxResults: String(max),
+    });
+    normalized.comments = (comments.comments ?? []).map((c: any) => ({
+      author: c.author?.displayName,
+      body: typeof c.body === "string" ? c.body : stripHtml(undefined),
+      created: c.created,
+    }));
+  }
+
+  if (opts?.includeAttachments) {
+    const atts = (issue.fields?.attachment ?? []).map((a: any) => ({
+      filename: a.filename,
+      size: a.size,
+      mimeType: a.mimeType,
+      contentUrl: a.content,
+    }));
+    normalized.attachments = atts;
+  }
+
+  return normalized;
 }
 
 function buildAdfComment(
@@ -184,6 +315,108 @@ Use the Jira tools provided when given a Jira link.`,
               created: result.created,
               author: result.author?.displayName,
             };
+          },
+        }),
+        // Fetch a single issue and return normalized fields
+        jira_get_issue_by_url: tool({
+          description: "Fetch a Jira issue by URL and return normalized fields",
+          inputSchema: z.object({
+            issue_url: z.string().url(),
+            include_comments: z.boolean().default(false),
+            max_comments: z.number().int().positive().max(200).default(50),
+            include_attachments: z.boolean().default(false),
+          }),
+          execute: async ({
+            issue_url,
+            include_comments,
+            max_comments,
+            include_attachments,
+          }) => {
+            const key = parseIssueKeyFromUrl(issue_url);
+            const normalized = await fetchIssueNormalized(key, {
+              includeComments: include_comments,
+              maxComments: max_comments,
+              includeAttachments: include_attachments,
+            });
+            return normalized;
+          },
+        }),
+        // Aggregate context for an issue: parent, links, subtasks, comments, attachments
+        jira_get_issue_context: tool({
+          description:
+            "Aggregate full context for a Jira issue (parent, subtasks, links, comments, attachments)",
+          inputSchema: z.object({
+            issue_url: z.string().url(),
+            include_comments: z.boolean().default(true),
+            include_attachments: z.boolean().default(false),
+            include_linked: z.boolean().default(true),
+            include_subtasks: z.boolean().default(true),
+            max_comments: z.number().int().positive().max(200).default(50),
+          }),
+          execute: async (input) => {
+            const key = parseIssueKeyFromUrl(input.issue_url);
+            const base = await fetchIssueNormalized(key, {
+              includeComments: input.include_comments,
+              maxComments: input.max_comments,
+              includeAttachments: input.include_attachments,
+            });
+
+            let parent: any = undefined;
+            if (base.parentKey) {
+              parent = await getJson<any>(
+                `/rest/api/3/issue/${base.parentKey}`,
+                { fields: "summary,status,issuetype" },
+              );
+            }
+
+            const acceptance: string[] = [];
+            const harvest = (text?: string) => {
+              if (!text) return;
+              const lines = text.split("\n");
+              for (const line of lines) {
+                if (
+                  /^\s*[-*]\s+/.test(line) ||
+                  /(AC:|Acceptance Criteria|Given\/?When\/?Then)/i.test(line)
+                ) {
+                  acceptance.push(line.trim());
+                }
+              }
+            };
+            harvest(base.description?.text);
+            if (base.comments) base.comments.forEach((c) => harvest(c.body));
+
+            return {
+              ...base,
+              parent: parent
+                ? {
+                    key: parent.key,
+                    summary: parent.fields?.summary,
+                    status: parent.fields?.status?.name,
+                    type: parent.fields?.issuetype?.name,
+                  }
+                : undefined,
+              acceptanceCriteria: acceptance.slice(0, 50),
+            };
+          },
+        }),
+        // Resolve users for mentions
+        jira_find_user: tool({
+          description:
+            "Find users by name or email and return accountId + displayName",
+          inputSchema: z.object({
+            query: z.string().min(1),
+            limit: z.number().int().positive().max(50).default(10),
+          }),
+          execute: async ({ query, limit }) => {
+            const users = await getJson<any>(`/rest/api/3/user/search`, {
+              query,
+              maxResults: String(limit),
+            });
+            return (Array.isArray(users) ? users : []).map((u: any) => ({
+              accountId: u.accountId,
+              displayName: u.displayName,
+              emailAddress: u.emailAddress,
+            }));
           },
         }),
       },
