@@ -381,6 +381,22 @@ export default blink.agent({
 Use the Jira tools provided when given a Jira link.`,
       messages: convertToModelMessages(messages),
       tools: {
+        // Utility: current date/time
+        get_current_date: tool({
+          description: "Get the current UTC date/time",
+          inputSchema: z.object({}),
+          execute: async () => {
+            const now = new Date();
+            const iso = now.toISOString();
+            return {
+              iso,
+              date: iso.slice(0, 10),
+              time: iso.slice(11, 19) + "Z",
+              epochMillis: now.getTime(),
+              timezone: "UTC",
+            };
+          },
+        }),
         // Quick env visibility
         jira_env_check: tool({
           description:
