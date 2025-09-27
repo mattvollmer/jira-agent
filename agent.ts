@@ -1116,7 +1116,8 @@ Use the Jira tools provided when given a Jira link.`,
         return new Response("OK", { status: 200 });
       }
 
-      // Parse ADF body
+      // Parse ADF body if present, otherwise try to fetch by comment id
+      const commentId: string | undefined = comment?.id ?? comment?.commentId;
       let adfBody: any = comment.body;
       if (typeof adfBody === "string") {
         try {
@@ -1125,6 +1126,23 @@ Use the Jira tools provided when given a Jira link.`,
           // Not ADF JSON; ignore
           adfBody = undefined;
         }
+      }
+
+      if (!adfBody && commentId) {
+        try {
+          const fetched = await getJson<any>(
+            `/rest/api/3/issue/${issueKey}/comment/${commentId}`,
+          );
+          adfBody = fetched?.body;
+        } catch (_) {
+          // ignore; will fall back below
+        }
+      }
+
+      // Final fallback: some projects only expose plain text in automation
+      // Accept a bodyText string and wrap it in an ADF doc (no mentions supported)
+      if (!adfBody && typeof comment?.bodyText === "string") {
+        adfBody = toAdfDoc(comment.bodyText);
       }
 
       if (!adfBody || !adfContainsMention(adfBody, serviceAccountId)) {
