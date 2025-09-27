@@ -283,6 +283,37 @@ function toAdfDoc(text?: string) {
   };
 }
 
+function adfText(node: any): string {
+  if (!node) return "";
+  if (Array.isArray(node)) return node.map(adfText).join("");
+  if (typeof node === "string") return node;
+  const type = node.type;
+  if (type === "text") return node.text ?? "";
+  if (type === "mention") return node.attrs?.text ?? "";
+  if (type === "hardBreak") return "\n";
+  const content = node.content ? adfText(node.content) : "";
+  return content;
+}
+
+function buildAdfReply(text: string, mentionAccountId?: string) {
+  const content: any[] = [];
+  if (mentionAccountId) {
+    content.push({
+      type: "mention",
+      attrs: { id: mentionAccountId, text: "" },
+    });
+    content.push({ type: "text", text: " " });
+  }
+  content.push({ type: "text", text });
+  return {
+    body: {
+      version: 1,
+      type: "doc",
+      content: [{ type: "paragraph", content }],
+    },
+  };
+}
+
 // JQL helpers for list tools
 function q(s: string) {
   return `"${s.replace(/"/g, '\\"')}"`;
@@ -1199,10 +1230,96 @@ Use the Jira tools provided when given a Jira link.`,
         return new Response("OK", { status: 200 });
       }
 
-      const reply = buildAdfComment(
-        "Thanks for the mention.",
-        authorId ? [{ accountId: authorId }] : undefined,
-      );
+      // Gather context for LLM
+      let issueSummary = "";
+      let issueDescription = "";
+      let issueStatus = "";
+      let issueType = "";
+      let issuePriority = "";
+      let labels: string[] = [];
+      try {
+        const issue = await getJson<any>(`/rest/api/3/issue/${issueKey}`, {
+          fields: [
+            "summary",
+            "description",
+            "issuetype",
+            "priority",
+            "labels",
+            "status",
+          ].join(","),
+          expand: "renderedFields",
+        });
+        issueSummary = issue?.fields?.summary ?? "";
+        issueDescription = stripHtml(issue?.renderedFields?.description) ?? "";
+        issueStatus = issue?.fields?.status?.name ?? "";
+        issueType = issue?.fields?.issuetype?.name ?? "";
+        issuePriority = issue?.fields?.priority?.name ?? "";
+        labels = (issue?.fields?.labels ?? []).map(String);
+      } catch (e) {
+        log("issue_fetch_failed", {
+          reqId,
+          issueKey,
+          error: (e as Error)?.message,
+        });
+      }
+
+      let recentComments: string[] = [];
+      try {
+        const comments = await getJson<any>(
+          `/rest/api/3/issue/${issueKey}/comment`,
+          {
+            orderBy: "created",
+            maxResults: "5",
+          },
+        );
+        recentComments = (comments?.comments ?? [])
+          .map((c: any) => {
+            const body = typeof c.body === "string" ? c.body : adfText(c.body);
+            const name = c?.author?.displayName ?? "";
+            return name ? `${name}: ${body}` : body;
+          })
+          .filter((s: string) => !!s)
+          .slice(-5);
+      } catch (e) {
+        log("comments_fetch_failed", {
+          reqId,
+          issueKey,
+          error: (e as Error)?.message,
+        });
+      }
+
+      const userQuestion = adfText(adfBody).trim().slice(0, 4000);
+
+      // Generate an answer with the LLM
+      let answer = "";
+      try {
+        const res = await streamText({
+          model: "anthropic/claude-sonnet-4",
+          system:
+            "You are a Jira assistant responding in issue comments. Be concise, direct, and helpful. No emojis. No headers. Provide plain sentences. If the user asks about the issue, summarize and propose next steps. If the request is unclear, ask a brief clarifying question.",
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: `User message: ${userQuestion}\n\nIssue key: ${issueKey}\nSummary: ${issueSummary}\nStatus: ${issueStatus}\nType: ${issueType}\nPriority: ${issuePriority}\nLabels: ${labels.join(", ")}\n\nDescription:\n${issueDescription}\n\nRecent comments:\n${recentComments.map((s) => "- " + s).join("\n")}`,
+                },
+              ],
+            },
+          ],
+        });
+        let out = "";
+        for await (const chunk of res.textStream) out += chunk;
+        answer =
+          out.trim().slice(0, 4000) ||
+          "Not enough context to answer. Could you clarify what you’d like to know?";
+      } catch (e) {
+        log("llm_failed", { reqId, issueKey, error: (e as Error)?.message });
+        answer = "I couldn’t generate a response right now.";
+      }
+
+      const reply = buildAdfReply(answer, authorId);
 
       try {
         const posted: any = await postJson(
