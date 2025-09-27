@@ -383,17 +383,57 @@ Use the Jira tools provided when given a Jira link.`,
       tools: {
         // Utility: current date/time
         get_current_date: tool({
-          description: "Get the current UTC date/time",
+          description:
+            "Get the current UTC date/time with weekday and human-formatted output",
           inputSchema: z.object({}),
           execute: async () => {
             const now = new Date();
             const iso = now.toISOString();
+            const weekdayNames = [
+              "Sunday",
+              "Monday",
+              "Tuesday",
+              "Wednesday",
+              "Thursday",
+              "Friday",
+              "Saturday",
+            ];
+            const monthNames = [
+              "January",
+              "February",
+              "March",
+              "April",
+              "May",
+              "June",
+              "July",
+              "August",
+              "September",
+              "October",
+              "November",
+              "December",
+            ];
+            const weekdayIndex = now.getUTCDay();
+            const weekday = weekdayNames[weekdayIndex];
+            const monthIndex = now.getUTCMonth();
+            const month = monthNames[monthIndex];
+            const day = now.getUTCDate();
+            const year = now.getUTCFullYear();
+            const human = `${weekday}, ${month} ${day}, ${year} (UTC)`;
             return {
               iso,
               date: iso.slice(0, 10),
               time: iso.slice(11, 19) + "Z",
               epochMillis: now.getTime(),
               timezone: "UTC",
+              weekday,
+              weekdayIndex,
+              month,
+              monthIndex,
+              day,
+              year,
+              human,
+              rfc1123: now.toUTCString(),
+              offsetMinutes: 0,
             };
           },
         }),
