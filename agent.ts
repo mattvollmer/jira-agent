@@ -109,17 +109,9 @@ export default blink.agent({
       model: "anthropic/claude-sonnet-4",
       system: `You are a basic agent the user will customize.
 
-Suggest the user adds tools to the agent. Demonstrate your capabilities with the IP tool.`,
+Use the Jira tools provided when given a Jira link.`,
       messages: convertToModelMessages(messages),
       tools: {
-        get_ip_info: tool({
-          description: "Get IP address information of the computer.",
-          inputSchema: z.object({}),
-          execute: async () => {
-            const response = await fetch("https://ipinfo.io/json");
-            return response.json();
-          },
-        }),
         // Jira connectivity test
         jira_ping: tool({
           description: "Verify Jira credentials and site access via /myself",
