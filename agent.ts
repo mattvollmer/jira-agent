@@ -9,12 +9,12 @@ import {
   adfContainsMention,
   adfText,
   parseIssueKeyFromUrl,
-  buildAdfComment,
+  // buildAdfComment (unused here)
   getJiraSiteBase,
-  JiraMyself,
   requireEnv,
   getJson,
 } from "./jira";
+import type { JiraMyself } from "./jira";
 
 const JIRA_AUTOMATION_SECRET = process.env.JIRA_AUTOMATION_SECRET?.trim();
 const JIRA_SERVICE_ACCOUNT_ID = process.env.JIRA_SERVICE_ACCOUNT_ID?.trim();
@@ -229,17 +229,14 @@ blink
       }
 
       const userText = adfText(adfBody).trim();
-      const base = (JIRA_SITE_BASE || "https://example.invalid").replace(
-        /\/$/,
-        "",
-      );
+      const base = (getJiraSiteBase() || "https://example.invalid").replace(/\/$/, "");
       const issueUrl = `${base}/browse/${issueKey}`;
 
       // Upsert chat and store metadata
       const chat = await blink.chat.upsert(`jira-${issueKey}`);
       await blink.storage.kv.set(
         `jira-meta-${chat.id}`,
-        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
+        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null })
       );
 
       // Enqueue user message with context hint for tools
@@ -257,7 +254,7 @@ blink
           role: "user",
           parts: [{ type: "text", text: composed }],
         },
-        { behavior: "interrupt" },
+        { behavior: "interrupt" }
       );
 
       log("chat_enqueued", { reqId, chatId: chat.id, issueKey });
