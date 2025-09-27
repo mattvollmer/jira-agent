@@ -7,6 +7,18 @@ const JIRA_BASE_URL = process.env.JIRA_BASE_URL?.replace(/\/+$/, "");
 const JIRA_EMAIL = process.env.JIRA_EMAIL;
 const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
 
+type JiraMyself = {
+  accountId: string;
+  displayName: string;
+  emailAddress?: string;
+};
+
+type JiraCommentCreated = {
+  id: string;
+  created: string;
+  author?: { displayName?: string };
+};
+
 function requireEnv() {
   if (!JIRA_BASE_URL || !JIRA_EMAIL || !JIRA_API_TOKEN) {
     throw new Error(
@@ -36,17 +48,20 @@ function parseIssueKeyFromUrl(issueUrl: string): string {
   throw new Error("Unable to parse issue key from URL");
 }
 
-async function getJson(path: string, params?: Record<string, string>) {
+async function getJson<T>(
+  path: string,
+  params?: Record<string, string>,
+): Promise<T> {
   requireEnv();
   const url = new URL(path, JIRA_BASE_URL);
   if (params)
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   const res = await fetch(url.toString(), { headers: authHeaders() });
   if (!res.ok) throw new Error(`Jira API ${res.status}: ${await res.text()}`);
-  return res.json();
+  return (await res.json()) as T;
 }
 
-async function postJson(path: string, body: any) {
+async function postJson<T>(path: string, body: any): Promise<T> {
   requireEnv();
   const url = new URL(path, JIRA_BASE_URL);
   const res = await fetch(url.toString(), {
@@ -55,7 +70,7 @@ async function postJson(path: string, body: any) {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Jira API ${res.status}: ${await res.text()}`);
-  return res.json();
+  return (await res.json()) as T;
 }
 
 function buildAdfComment(
@@ -110,7 +125,7 @@ Suggest the user adds tools to the agent. Demonstrate your capabilities with the
           description: "Verify Jira credentials and site access via /myself",
           inputSchema: z.object({}),
           execute: async () => {
-            const me = await getJson("/rest/api/3/myself");
+            const me = await getJson<JiraMyself>("/rest/api/3/myself");
             return {
               accountId: me.accountId,
               displayName: me.displayName,
@@ -137,7 +152,7 @@ Suggest the user adds tools to the agent. Demonstrate your capabilities with the
           execute: async ({ issue_url, text, mentions }) => {
             const key = parseIssueKeyFromUrl(issue_url);
             const body = buildAdfComment(text, mentions);
-            const result = await postJson(
+            const result = await postJson<JiraCommentCreated>(
               `/rest/api/3/issue/${key}/comment`,
               body,
             );
