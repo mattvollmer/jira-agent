@@ -9,6 +9,7 @@ const JIRA_SITE_BASE = env("JIRA_BASE_URL")?.replace(/\/+$/, "");
 const JIRA_CLOUD_ID = env("JIRA_CLOUD_ID");
 const JIRA_EMAIL = env("JIRA_EMAIL");
 const JIRA_API_TOKEN = env("JIRA_API_TOKEN");
+const JIRA_ACCEPT_LANGUAGE = env("JIRA_ACCEPT_LANGUAGE") || "en-US";
 
 type JiraMyself = {
   accountId: string;
@@ -33,6 +34,8 @@ type NormalizedIssue = {
   url: string | null;
   summary: string | undefined;
   status: string | undefined;
+  statusCategoryKey?: string | undefined;
+  statusCategoryName?: string | undefined;
   type: string | undefined;
   priority?: string | undefined;
   labels: string[];
@@ -72,6 +75,7 @@ function authHeaders() {
     Authorization: `Basic ${basic}`,
     "Content-Type": "application/json",
     Accept: "application/json",
+    "Accept-Language": JIRA_ACCEPT_LANGUAGE,
   } as Record<string, string>;
 }
 
@@ -161,6 +165,8 @@ async function fetchIssueNormalized(
     url: JIRA_SITE_BASE ? `${JIRA_SITE_BASE}/browse/${issue.key}` : null,
     summary: issue.fields?.summary,
     status: issue.fields?.status?.name,
+    statusCategoryKey: issue.fields?.status?.statusCategory?.key,
+    statusCategoryName: issue.fields?.status?.statusCategory?.name,
     type: issue.fields?.issuetype?.name,
     priority: issue.fields?.priority?.name,
     labels: issue.fields?.labels ?? [],
@@ -287,6 +293,7 @@ Use the Jira tools provided when given a Jira link.`,
               siteBase: JIRA_SITE_BASE ?? null,
               email: JIRA_EMAIL ?? null,
               exampleMyself: joinApi("/rest/api/3/myself"),
+              acceptLanguage: JIRA_ACCEPT_LANGUAGE,
             };
           },
         }),
@@ -493,6 +500,8 @@ Use the Jira tools provided when given a Jira link.`,
               url: JIRA_SITE_BASE ? `${JIRA_SITE_BASE}/browse/${it.key}` : null,
               summary: it.fields?.summary,
               status: it.fields?.status?.name,
+              statusCategoryKey: it.fields?.status?.statusCategory?.key,
+              statusCategoryName: it.fields?.status?.statusCategory?.name,
               type: it.fields?.issuetype?.name,
               priority: it.fields?.priority?.name,
               assignee: it.fields?.assignee?.displayName,
