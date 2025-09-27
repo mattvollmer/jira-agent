@@ -2,6 +2,8 @@ import { convertToModelMessages, streamText, tool } from "ai";
 import * as blink from "blink";
 import { z } from "zod";
 
+const MODEL = "anthropic/claude-sonnet-4";
+
 // Jira helpers
 const env = (k: string) =>
   (process.env[k]?.trim() || undefined) as string | undefined;
@@ -451,14 +453,39 @@ function adfContainsMention(node: any, accountId: string): boolean {
 
 blink
   .agent({
-    async sendMessages({ messages }) {
-      return streamText({
-        model: "anthropic/claude-sonnet-4",
-        system: `You are a basic agent the user will customize.
+    async sendMessages({ messages, chat }) {
+      // Load Jira meta for this chat (issue and author to mention)
+      let meta: {
+        issueKey?: string;
+        issueUrl?: string;
+        authorId?: string;
+      } | null = null;
+      try {
+        const raw = chat
+          ? await blink.storage.kv.get(`jira-meta-${chat.id}`)
+          : null;
+        if (raw) meta = JSON.parse(raw);
+      } catch (_) {
+        meta = null;
+      }
 
-Use the Jira tools provided when given a Jira link.`,
+      return streamText({
+        model: MODEL,
+        system: [
+          "You are a Jira assistant responding in issue comments.",
+          "- Be concise, direct, and helpful.",
+          "- No emojis or headers.",
+          "- If unclear, ask one brief clarifying question.",
+          meta?.issueUrl
+            ? `- Issue URL: ${meta.issueUrl} (use jira_get_issue_context or jira_get_issue_by_url if you need details)`
+            : undefined,
+          "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text.",
+        ]
+          .filter(Boolean)
+          .join("\n"),
         messages: convertToModelMessages(messages),
         tools: {
+          // Existing tools
           // Utility: current date/time
           get_current_date: tool({
             description:
@@ -531,6 +558,26 @@ Use the Jira tools provided when given a Jira link.`,
                 exampleMyself: joinApi("/rest/api/3/myself"),
                 acceptLanguage: JIRA_ACCEPT_LANGUAGE,
               };
+            },
+          }),
+          // Delivery tool: post final response to Jira for this chat's issue
+          jira_reply: tool({
+            description:
+              "Post your final answer as a Jira comment for the current issue (mentioning the requester). Always call this ONCE at the end with your final text.",
+            inputSchema: z.object({ text: z.string().min(1) }),
+            execute: async ({ text }) => {
+              if (!meta?.issueUrl)
+                throw new Error("Missing issue metadata for delivery");
+              const key = parseIssueKeyFromUrl(meta.issueUrl);
+              const comment = buildAdfComment(
+                text,
+                meta.authorId ? [{ accountId: meta.authorId }] : undefined,
+              );
+              const result = await postJson<any>(
+                `/rest/api/3/issue/${key}/comment`,
+                comment,
+              );
+              return { id: result?.id ?? null };
             },
           }),
           // Add a comment to a Jira issue (mentions enabled by default if provided)
@@ -1121,7 +1168,7 @@ Use the Jira tools provided when given a Jira link.`,
         },
       });
     },
-    // New: webhook ingress for Jira Automation (Issue commented)
+    // Webhook ingress for Jira Automation: upsert chat and enqueue user message
     async onRequest(request) {
       const url = new URL(request.url);
       const reqId = rid();
@@ -1171,15 +1218,10 @@ Use the Jira tools provided when given a Jira link.`,
 
       const authorId: string | undefined =
         comment?.author?.accountId ?? comment?.authorId;
-      if (authorId && authorId === serviceAccountId) {
-        log("skip_self_comment", { reqId, issueKey, authorId });
-        return new Response("OK", { status: 200 });
-      }
-
-      // Parse ADF body if present, otherwise try to fetch by comment id
       const commentId: string | undefined = comment?.id ?? comment?.commentId;
+
+      // Get ADF or fetch comment if needed
       let adfBody: any = comment.body;
-      let parsedFrom: "inline" | "fetched" | "fallback_text" | "none" = "none";
       if (typeof adfBody === "string") {
         try {
           adfBody = JSON.parse(adfBody);
@@ -1187,15 +1229,12 @@ Use the Jira tools provided when given a Jira link.`,
           adfBody = undefined;
         }
       }
-      if (adfBody) parsedFrom = "inline";
-
       if (!adfBody && commentId) {
         try {
           const fetched = await getJson<any>(
             `/rest/api/3/issue/${issueKey}/comment/${commentId}`,
           );
           adfBody = fetched?.body;
-          if (adfBody) parsedFrom = "fetched";
         } catch (e) {
           log("fetch_comment_failed", {
             reqId,
@@ -1206,22 +1245,8 @@ Use the Jira tools provided when given a Jira link.`,
         }
       }
 
-      if (!adfBody && typeof comment?.bodyText === "string") {
-        adfBody = toAdfDoc(comment.bodyText);
-        parsedFrom = "fallback_text";
-      }
-
       const hasMention =
         !!adfBody && adfContainsMention(adfBody, serviceAccountId);
-      log("comment_inspected", {
-        reqId,
-        issueKey,
-        commentId,
-        authorId: authorId ?? null,
-        parsedFrom,
-        hasMention,
-      });
-
       if (!adfBody || !hasMention) {
         log("no_action", {
           reqId,
@@ -1230,118 +1255,39 @@ Use the Jira tools provided when given a Jira link.`,
         return new Response("OK", { status: 200 });
       }
 
-      // Gather context for LLM
-      let issueSummary = "";
-      let issueDescription = "";
-      let issueStatus = "";
-      let issueType = "";
-      let issuePriority = "";
-      let labels: string[] = [];
-      try {
-        const issue = await getJson<any>(`/rest/api/3/issue/${issueKey}`, {
-          fields: [
-            "summary",
-            "description",
-            "issuetype",
-            "priority",
-            "labels",
-            "status",
-          ].join(","),
-          expand: "renderedFields",
-        });
-        issueSummary = issue?.fields?.summary ?? "";
-        issueDescription = stripHtml(issue?.renderedFields?.description) ?? "";
-        issueStatus = issue?.fields?.status?.name ?? "";
-        issueType = issue?.fields?.issuetype?.name ?? "";
-        issuePriority = issue?.fields?.priority?.name ?? "";
-        labels = (issue?.fields?.labels ?? []).map(String);
-      } catch (e) {
-        log("issue_fetch_failed", {
-          reqId,
-          issueKey,
-          error: (e as Error)?.message,
-        });
-      }
+      const userText = adfText(adfBody).trim();
+      const base = (JIRA_SITE_BASE || "https://example.invalid").replace(
+        /\/$/,
+        "",
+      );
+      const issueUrl = `${base}/browse/${issueKey}`;
 
-      let recentComments: string[] = [];
-      try {
-        const comments = await getJson<any>(
-          `/rest/api/3/issue/${issueKey}/comment`,
-          {
-            orderBy: "created",
-            maxResults: "5",
-          },
-        );
-        recentComments = (comments?.comments ?? [])
-          .map((c: any) => {
-            const body = typeof c.body === "string" ? c.body : adfText(c.body);
-            const name = c?.author?.displayName ?? "";
-            return name ? `${name}: ${body}` : body;
-          })
-          .filter((s: string) => !!s)
-          .slice(-5);
-      } catch (e) {
-        log("comments_fetch_failed", {
-          reqId,
-          issueKey,
-          error: (e as Error)?.message,
-        });
-      }
+      // Upsert chat and store metadata
+      const chat = await blink.chat.upsert(`jira-${issueKey}`);
+      await blink.storage.kv.set(
+        `jira-meta-${chat.id}`,
+        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
+      );
 
-      const userQuestion = adfText(adfBody).trim().slice(0, 4000);
+      // Enqueue user message with context hint for tools
+      const composed = [
+        userText,
+        `\n\nISSUE_URL: ${issueUrl}`,
+        authorId ? `MENTION_ACCOUNT_ID: ${authorId}` : "",
+      ]
+        .filter(Boolean)
+        .join("");
 
-      // Generate an answer with the LLM
-      let answer = "";
-      try {
-        const res = await streamText({
-          model: "anthropic/claude-sonnet-4",
-          system:
-            "You are a Jira assistant responding in issue comments. Be concise, direct, and helpful. No emojis. No headers. Provide plain sentences. If the user asks about the issue, summarize and propose next steps. If the request is unclear, ask a brief clarifying question.",
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: `User message: ${userQuestion}\n\nIssue key: ${issueKey}\nSummary: ${issueSummary}\nStatus: ${issueStatus}\nType: ${issueType}\nPriority: ${issuePriority}\nLabels: ${labels.join(", ")}\n\nDescription:\n${issueDescription}\n\nRecent comments:\n${recentComments.map((s) => "- " + s).join("\n")}`,
-                },
-              ],
-            },
-          ],
-        });
-        let out = "";
-        for await (const chunk of res.textStream) out += chunk;
-        answer =
-          out.trim().slice(0, 4000) ||
-          "Not enough context to answer. Could you clarify what you’d like to know?";
-      } catch (e) {
-        log("llm_failed", { reqId, issueKey, error: (e as Error)?.message });
-        answer = "I couldn’t generate a response right now.";
-      }
+      await blink.chat.message(
+        chat.id,
+        {
+          role: "user",
+          parts: [{ type: "text", text: composed }],
+        },
+        { behavior: "interrupt" },
+      );
 
-      const reply = buildAdfReply(answer, authorId);
-
-      try {
-        const posted: any = await postJson(
-          `/rest/api/3/issue/${issueKey}/comment`,
-          reply,
-        );
-        log("reply_posted", {
-          reqId,
-          issueKey,
-          commentId,
-          replyId: posted?.id ?? null,
-        });
-      } catch (err) {
-        log("reply_failed", {
-          reqId,
-          issueKey,
-          commentId,
-          error: (err as Error)?.message,
-        });
-        return new Response("Upstream Jira error", { status: 502 });
-      }
-
+      log("chat_enqueued", { reqId, chatId: chat.id, issueKey });
       return new Response("OK", { status: 200 });
     },
   })
