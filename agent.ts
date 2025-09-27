@@ -3,10 +3,12 @@ import * as blink from "blink";
 import { z } from "zod";
 
 // Jira helpers
-const JIRA_SITE_BASE = process.env.JIRA_BASE_URL?.replace(/\/+$/, "");
-const JIRA_CLOUD_ID = process.env.JIRA_CLOUD_ID;
-const JIRA_EMAIL = process.env.JIRA_EMAIL;
-const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN;
+const env = (k: string) =>
+  (process.env[k]?.trim() || undefined) as string | undefined;
+const JIRA_SITE_BASE = env("JIRA_BASE_URL")?.replace(/\/+$/, "");
+const JIRA_CLOUD_ID = env("JIRA_CLOUD_ID");
+const JIRA_EMAIL = env("JIRA_EMAIL");
+const JIRA_API_TOKEN = env("JIRA_API_TOKEN");
 
 type JiraMyself = {
   accountId: string;
@@ -118,6 +120,22 @@ export default blink.agent({
 Use the Jira tools provided when given a Jira link.`,
       messages: convertToModelMessages(messages),
       tools: {
+        // Quick env visibility
+        jira_env_check: tool({
+          description:
+            "Report which Jira env vars are visible and the computed API base",
+          inputSchema: z.object({}),
+          execute: async () => {
+            return {
+              cloudIdPresent: !!JIRA_CLOUD_ID,
+              emailPresent: !!JIRA_EMAIL,
+              tokenPresent: !!JIRA_API_TOKEN,
+              apiBase: apiBase(),
+              siteBase: JIRA_SITE_BASE ?? null,
+              email: JIRA_EMAIL ?? null,
+            };
+          },
+        }),
         // Jira connectivity test
         jira_ping: tool({
           description: "Verify Jira credentials and site access via /myself",
