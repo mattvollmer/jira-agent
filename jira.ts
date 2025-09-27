@@ -720,10 +720,22 @@ export function createJiraTools(
         if (input.assignee_accountId) after.assignee = input.assignee_accountId;
         if (input.due_date) after.duedate = normalizeDueDate(input.due_date);
 
-        const addLabels = Array.from(new Set(input.labels_add.map((s: string) => s.trim()).filter(Boolean)));
+        const addLabels: string[] = Array.from(
+          new Set<string>(
+            (input.labels_add as string[])
+              .map((s: string) => s.trim())
+              .filter((s: string): s is string => s.length > 0),
+          ),
+        );
         after.labels = Array.from(new Set([...(before.labels as string[]), ...addLabels]));
 
-        const addComponents = Array.from(new Set(input.components_add.map((s: string) => s.trim()).filter(Boolean)));
+        const addComponents: string[] = Array.from(
+          new Set<string>(
+            (input.components_add as string[])
+              .map((s: string) => s.trim())
+              .filter((s: string): s is string => s.length > 0),
+          ),
+        );
         const existingCompNames = before.components as string[];
         const finalCompNames: string[] = Array.from(new Set<string>([...(existingCompNames || []), ...addComponents]));
         const compCatalog = await getProjectComponents(projectKey);
