@@ -132,6 +132,18 @@ async function postJson<T>(path: string, body: any): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function putJson<T>(path: string, body: any): Promise<T> {
+  requireEnv();
+  const url = joinApi(path);
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Jira API ${res.status}: ${await res.text()}`);
+  return (await res.json().catch(() => ({}))) as T;
+}
+
 function stripHtml(html?: string): string {
   if (!html) return "";
   return html
@@ -314,6 +326,18 @@ async function getProjectIssueTypes(projectKey: string): Promise<string[]> {
   return [];
 }
 
+async function getProjectComponents(
+  projectKey: string,
+): Promise<{ id: string; name: string }[]> {
+  const res = await getJson<any>(
+    `/rest/api/3/project/${projectKey}/components`,
+  );
+  return (Array.isArray(res) ? res : []).map((c: any) => ({
+    id: String(c.id),
+    name: String(c.name),
+  }));
+}
+
 function canonicalizeIssueType(input: string): string {
   const s = input.trim().toLowerCase();
   const map: Record<string, string> = {
@@ -331,6 +355,21 @@ function canonicalizeIssueType(input: string): string {
     "service request": "Service Request",
   };
   return map[s] || input;
+}
+
+function normalizeDueDate(input?: string): string | undefined {
+  if (!input) return undefined;
+  // Accept YYYY-MM-DD directly
+  if (/^\d{4}-\d{2}-\d{2}$/.test(input)) return input;
+  const d = new Date(input);
+  if (isNaN(d.getTime()))
+    throw new Error(
+      "Invalid due_date format; use YYYY-MM-DD or a parseable date string",
+    );
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 export default blink.agent({
@@ -695,6 +734,245 @@ Use the Jira tools provided when given a Jira link.`,
               projectKey,
               issueType: resolvedType,
             };
+          },
+        }),
+        // Update issue fields (no deletes; only add labels/components)
+        jira_update_issue_fields: tool({
+          description:
+            "Edit an issue: summary, description, priority, assignee, labels add, components add, due date, and optional issue type change. Supports dry_run preview and change summary comment.",
+          inputSchema: z.object({
+            issue_url: z.string().url(),
+            summary: z.string().optional(),
+            description: z.string().optional(),
+            priority: z.string().optional(),
+            assignee_accountId: z.string().optional(),
+            labels_add: z.array(z.string()).default([]),
+            components_add: z.array(z.string()).default([]),
+            due_date: z.string().optional(),
+            issue_type: z.string().optional(),
+            parent_issue_url: z.string().url().optional(),
+            dry_run: z.boolean().default(true),
+            add_comment: z.boolean().default(true),
+          }),
+          execute: async (input) => {
+            const key = parseIssueKeyFromUrl(input.issue_url);
+            const fieldsNeeded = [
+              "summary",
+              "description",
+              "labels",
+              "components",
+              "duedate",
+              "priority",
+              "assignee",
+              "issuetype",
+              "project",
+            ];
+            const issue = await getJson<any>(`/rest/api/3/issue/${key}`, {
+              fields: fieldsNeeded.join(","),
+            });
+            const before = {
+              summary: issue.fields?.summary,
+              description: stripHtml(
+                issue.fields?.description?.content
+                  ? undefined
+                  : issue.fields?.description,
+              ),
+              labels: issue.fields?.labels ?? [],
+              components: (issue.fields?.components ?? []).map(
+                (c: any) => c.name,
+              ),
+              duedate: issue.fields?.duedate,
+              priority: issue.fields?.priority?.name,
+              assignee: issue.fields?.assignee?.displayName,
+              issuetype: issue.fields?.issuetype?.name,
+              projectKey: issue.fields?.project?.key,
+            } as any;
+
+            const projectKey = before.projectKey as string;
+
+            // Compute after values
+            const after = { ...before } as any;
+            if (input.summary) after.summary = input.summary;
+            if (input.description !== undefined)
+              after.description = input.description;
+            if (input.priority) after.priority = input.priority;
+            if (input.assignee_accountId)
+              after.assignee = input.assignee_accountId;
+            if (input.due_date)
+              after.duedate = normalizeDueDate(input.due_date);
+
+            // Labels add only
+            const addLabels = Array.from(
+              new Set(input.labels_add.map((s) => s.trim()).filter(Boolean)),
+            );
+            after.labels = Array.from(
+              new Set([...(before.labels as string[]), ...addLabels]),
+            );
+
+            // Components add only: map names to ids
+            const addComponents = Array.from(
+              new Set(
+                input.components_add.map((s) => s.trim()).filter(Boolean),
+              ),
+            );
+            const existingCompNames = before.components as string[];
+            const finalCompNames = Array.from(
+              new Set([...(existingCompNames || []), ...addComponents]),
+            );
+            const compCatalog = await getProjectComponents(projectKey);
+            const compByLower = new Map(
+              compCatalog.map((c) => [c.name.toLowerCase(), c]),
+            );
+            const finalCompIds = finalCompNames
+              .map((n) => compByLower.get(n.toLowerCase()))
+              .filter(Boolean)
+              .map((c: any) => ({ id: c.id }));
+
+            // Issue type change if requested
+            let resolvedType: string | undefined = undefined;
+            if (input.issue_type) {
+              const allowed = (await getProjectIssueTypes(projectKey)).map(
+                String,
+              );
+              const canon = canonicalizeIssueType(input.issue_type);
+              const exact = allowed.find(
+                (n) => n.toLowerCase() === canon.toLowerCase(),
+              );
+              if (!exact)
+                throw new Error(
+                  `issue_type '${input.issue_type}' not allowed in project ${projectKey}`,
+                );
+              resolvedType = exact;
+            }
+
+            // Build update body
+            const updateFields: any = {};
+            if (after.summary !== before.summary)
+              updateFields.summary = after.summary;
+            if (input.description !== undefined)
+              updateFields.description = toAdfDoc(after.description);
+            if (after.priority !== before.priority)
+              updateFields.priority = { name: after.priority };
+            if (input.assignee_accountId)
+              updateFields.assignee = { accountId: input.assignee_accountId };
+            if (after.duedate !== before.duedate)
+              updateFields.duedate = after.duedate;
+            if (addLabels.length) updateFields.labels = after.labels; // union only
+            if (finalCompIds.length) updateFields.components = finalCompIds; // union only
+            if (resolvedType) updateFields.issuetype = { name: resolvedType };
+
+            if (resolvedType && resolvedType.toLowerCase() === "sub-task") {
+              if (!input.parent_issue_url)
+                throw new Error(
+                  "parent_issue_url is required when changing type to Sub-task",
+                );
+              updateFields.parent = {
+                key: parseIssueKeyFromUrl(input.parent_issue_url),
+              };
+            }
+
+            const preview = {
+              key,
+              changes: updateFields,
+            };
+
+            if (input.dry_run) {
+              return { dry_run: true, ...preview };
+            }
+
+            // Apply update
+            await putJson(`/rest/api/3/issue/${key}`, { fields: updateFields });
+
+            // Optional comment summarizing changes
+            if (input.add_comment) {
+              const summaryText = Object.keys(updateFields)
+                .map((k) => `- ${k}`)
+                .join("\n");
+              const comment = {
+                body: toAdfDoc(`Updated fields:\n${summaryText}`),
+              };
+              await postJson(`/rest/api/3/issue/${key}/comment`, comment);
+            }
+
+            return {
+              key,
+              url: JIRA_SITE_BASE ? `${JIRA_SITE_BASE}/browse/${key}` : null,
+              applied: Object.keys(updateFields),
+            };
+          },
+        }),
+        // List transitions for an issue
+        jira_list_transitions: tool({
+          description: "List available transitions for an issue",
+          inputSchema: z.object({ issue_url: z.string().url() }),
+          execute: async ({ issue_url }) => {
+            const key = parseIssueKeyFromUrl(issue_url);
+            const res = await getJson<any>(
+              `/rest/api/3/issue/${key}/transitions`,
+              {},
+            );
+            return (res.transitions ?? []).map((t: any) => ({
+              id: t.id,
+              name: t.name,
+              to: t.to?.name,
+            }));
+          },
+        }),
+        // Apply a transition by name
+        jira_transition_issue: tool({
+          description: "Transition an issue by transition name",
+          inputSchema: z.object({
+            issue_url: z.string().url(),
+            transition_name: z.string().min(1),
+          }),
+          execute: async ({ issue_url, transition_name }) => {
+            const key = parseIssueKeyFromUrl(issue_url);
+            const res = await getJson<any>(
+              `/rest/api/3/issue/${key}/transitions`,
+              {},
+            );
+            const found = (res.transitions ?? []).find(
+              (t: any) =>
+                String(t.name).toLowerCase() === transition_name.toLowerCase(),
+            );
+            if (!found)
+              throw new Error(
+                `Transition '${transition_name}' not available on ${key}`,
+              );
+            await postJson(`/rest/api/3/issue/${key}/transitions`, {
+              transition: { id: found.id },
+            });
+            return { key, applied: found.name, to: found.to?.name };
+          },
+        }),
+        // Link two issues by type and direction
+        jira_link_issue: tool({
+          description:
+            "Create an issue link between two issues (e.g., Blocks, Relates). Direction defaults to outward.",
+          inputSchema: z.object({
+            from_issue_url: z.string().url(),
+            to_issue_url: z.string().url(),
+            link_type: z.string().min(1),
+            direction: z.enum(["outward", "inward"]).default("outward"),
+          }),
+          execute: async ({
+            from_issue_url,
+            to_issue_url,
+            link_type,
+            direction,
+          }) => {
+            const fromKey = parseIssueKeyFromUrl(from_issue_url);
+            const toKey = parseIssueKeyFromUrl(to_issue_url);
+            const body: any = { type: { name: link_type } };
+            if (direction === "outward") {
+              body.outwardIssue = { key: toKey };
+              body.inwardIssue = { key: fromKey };
+            } else {
+              body.outwardIssue = { key: fromKey };
+              body.inwardIssue = { key: toKey };
+            }
+            await postJson(`/rest/api/3/issueLink`, body);
+            return { from: fromKey, to: toKey, type: link_type, direction };
           },
         }),
       },
