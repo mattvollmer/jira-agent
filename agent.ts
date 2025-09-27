@@ -635,10 +635,11 @@ Use the Jira tools provided when given a Jira link.`,
               "Sub-task",
             ];
 
-            // If parent provided and Sub-task allowed, prefer Sub-task
-            let resolvedType = issue_type
+            // Start with a concrete string to satisfy TS
+            let resolvedType: string = issue_type
               ? canonicalizeIssueType(issue_type)
-              : undefined;
+              : "";
+
             if (
               !resolvedType &&
               parent_issue_url &&
@@ -647,7 +648,6 @@ Use the Jira tools provided when given a Jira link.`,
               resolvedType = "Sub-task";
             }
             if (!resolvedType) {
-              // pick from preferred order if allowed; else first allowed; else fallback Task
               const found = preferredOrder.find((t) =>
                 allowed.some((n) => n.toLowerCase() === t.toLowerCase()),
               );
@@ -660,8 +660,7 @@ Use the Jira tools provided when given a Jira link.`,
               allowed.length &&
               !allowedLower.has(resolvedType.toLowerCase())
             ) {
-              // fallback to first allowed
-              resolvedType = allowed[0];
+              resolvedType = allowed[0] || "Task";
             }
 
             // Build fields
