@@ -725,10 +725,13 @@ export function createJiraTools(
 
         const addComponents = Array.from(new Set(input.components_add.map((s: string) => s.trim()).filter(Boolean)));
         const existingCompNames = before.components as string[];
-        const finalCompNames = Array.from(new Set([...(existingCompNames || []), ...addComponents]));
+        const finalCompNames: string[] = Array.from(new Set<string>([...(existingCompNames || []), ...addComponents]));
         const compCatalog = await getProjectComponents(projectKey);
-        const compByLower = new Map(compCatalog.map((c) => [c.name.toLowerCase(), c]));
-        const finalCompIds = finalCompNames.map((n) => compByLower.get(n.toLowerCase())).filter(Boolean).map((c: any) => ({ id: c.id }));
+        const compByLower = new Map<string, { id: string; name: string }>(compCatalog.map((c) => [c.name.toLowerCase(), c]));
+        const finalCompIds = finalCompNames
+          .map((n: string) => compByLower.get(n.toLowerCase()))
+          .filter((c): c is { id: string; name: string } => Boolean(c))
+          .map((c) => ({ id: c.id }));
 
         let resolvedType: string | undefined = undefined;
         if (input.issue_type) {
