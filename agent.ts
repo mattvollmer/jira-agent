@@ -56,12 +56,18 @@ function apiBase(): string {
   return `https://api.atlassian.com/ex/jira/${JIRA_CLOUD_ID}`;
 }
 
+function joinApi(path: string): string {
+  const base = apiBase().replace(/\/+$/, "") + "/";
+  const safePath = path.replace(/^\/+/, "");
+  return new URL(safePath, base).toString();
+}
+
 async function getJson<T>(
   path: string,
   params?: Record<string, string>,
 ): Promise<T> {
   requireEnv();
-  const url = new URL(path, apiBase());
+  const url = new URL(joinApi(path));
   if (params)
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   const res = await fetch(url.toString(), { headers: authHeaders() });
@@ -71,8 +77,8 @@ async function getJson<T>(
 
 async function postJson<T>(path: string, body: any): Promise<T> {
   requireEnv();
-  const url = new URL(path, apiBase());
-  const res = await fetch(url.toString(), {
+  const url = joinApi(path);
+  const res = await fetch(url, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify(body),
@@ -133,6 +139,7 @@ Use the Jira tools provided when given a Jira link.`,
               apiBase: apiBase(),
               siteBase: JIRA_SITE_BASE ?? null,
               email: JIRA_EMAIL ?? null,
+              exampleMyself: joinApi("/rest/api/3/myself"),
             };
           },
         }),
