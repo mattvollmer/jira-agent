@@ -270,6 +270,52 @@ function jqlAnd(parts: string[]) {
   return parts.filter(Boolean).join(" AND ");
 }
 
+// Fetch allowed issue types for a project
+async function getProjectIssueTypes(projectKey: string): Promise<string[]> {
+  try {
+    const meta = await getJson<any>(`/rest/api/3/issue/createmeta`, {
+      projectKeys: projectKey,
+      expand: "projects.issuetypes",
+    });
+    const p = (meta.projects ?? []).find((p: any) => p.key === projectKey);
+    const names = (p?.issuetypes ?? []).map((t: any) => t.name).filter(Boolean);
+    if (names.length) return names;
+  } catch (_) {
+    // ignore and fallback
+  }
+  try {
+    const statuses = await getJson<any>(
+      `/rest/api/3/project/${projectKey}/statuses`,
+    );
+    const names = (Array.isArray(statuses) ? statuses : [])
+      .map((it: any) => it.name)
+      .filter(Boolean);
+    if (names.length) return names;
+  } catch (_) {
+    // ignore
+  }
+  return [];
+}
+
+function canonicalizeIssueType(input: string): string {
+  const s = input.trim().toLowerCase();
+  const map: Record<string, string> = {
+    bug: "Bug",
+    task: "Task",
+    story: "Story",
+    epic: "Epic",
+    subtask: "Sub-task",
+    "sub-task": "Sub-task",
+    "sub task": "Sub-task",
+    idea: "Idea",
+    incident: "Incident",
+    change: "Change",
+    problem: "Problem",
+    "service request": "Service Request",
+  };
+  return map[s] || input;
+}
+
 export default blink.agent({
   async sendMessages({ messages }) {
     return streamText({
@@ -473,13 +519,37 @@ Use the Jira tools provided when given a Jira link.`,
             limit,
             start_at,
           }) => {
+            const allowed = (await getProjectIssueTypes(project_key)).map((n) =>
+              String(n),
+            );
+            const allowedLower = new Map(
+              allowed.map((n) => [n.toLowerCase(), n]),
+            );
+
+            const requestedCanon = types.map(canonicalizeIssueType);
+            const matched: string[] = [];
+            for (const t of requestedCanon) {
+              const exact = allowed.find(
+                (n) => n.toLowerCase() === t.toLowerCase(),
+              );
+              if (exact && !matched.includes(exact)) matched.push(exact);
+            }
+
+            // If none matched, use all allowed (or omit filter if none discoverable)
+            const typesFilter = matched.length
+              ? matched
+              : allowed.length
+                ? allowed
+                : [];
+
             const parts: string[] = [
               `project = ${project_key}`,
-              types.length ? jqlIn("issuetype", types) : "",
+              typesFilter.length ? jqlIn("issuetype", typesFilter) : "",
               statuses.length ? jqlIn("status", statuses) : "",
               jqlAssignee(assignee_accountId),
             ];
             const jql = jqlAnd(parts);
+
             const search = await getJson<any>(`/rest/api/3/search`, {
               jql,
               startAt: String(start_at),
