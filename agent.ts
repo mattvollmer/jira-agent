@@ -8,8 +8,6 @@ import {
   createJiraTools,
   adfContainsMention,
   adfText,
-  parseIssueKeyFromUrl,
-  // buildAdfComment (unused here)
   getJiraSiteBase,
   requireEnv,
   getJson,
