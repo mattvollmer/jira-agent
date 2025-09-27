@@ -10,6 +10,7 @@ const JIRA_CLOUD_ID = env("JIRA_CLOUD_ID");
 const JIRA_EMAIL = env("JIRA_EMAIL");
 const JIRA_API_TOKEN = env("JIRA_API_TOKEN");
 const JIRA_ACCEPT_LANGUAGE = env("JIRA_ACCEPT_LANGUAGE") || "en-US";
+const JIRA_DEFAULT_PROJECT = env("JIRA_DEFAULT_PROJECT");
 
 type JiraMyself = {
   accountId: string;
@@ -87,6 +88,11 @@ function parseIssueKeyFromUrl(issueUrl: string): string {
   const match = path.match(/[A-Z][A-Z0-9_]+-\d+/i);
   if (match) return match[0].toUpperCase();
   throw new Error("Unable to parse issue key from URL");
+}
+
+function projectKeyFromIssueUrl(issueUrl: string): string {
+  const key = parseIssueKeyFromUrl(issueUrl);
+  return key.split("-")[0];
 }
 
 function apiBase(): string {
@@ -251,6 +257,16 @@ function buildAdfComment(
         },
       ],
     },
+  };
+}
+
+function toAdfDoc(text?: string) {
+  return {
+    version: 1,
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: text ?? "" }] },
+    ],
   };
 }
 
@@ -519,13 +535,9 @@ Use the Jira tools provided when given a Jira link.`,
             limit,
             start_at,
           }) => {
-            const allowed = (await getProjectIssueTypes(project_key)).map((n) =>
-              String(n),
+            const allowed = (await getProjectIssueTypes(project_key)).map(
+              String,
             );
-            const allowedLower = new Map(
-              allowed.map((n) => [n.toLowerCase(), n]),
-            );
-
             const requestedCanon = types.map(canonicalizeIssueType);
             const matched: string[] = [];
             for (const t of requestedCanon) {
@@ -534,8 +546,6 @@ Use the Jira tools provided when given a Jira link.`,
               );
               if (exact && !matched.includes(exact)) matched.push(exact);
             }
-
-            // If none matched, use all allowed (or omit filter if none discoverable)
             const typesFilter = matched.length
               ? matched
               : allowed.length
@@ -577,6 +587,114 @@ Use the Jira tools provided when given a Jira link.`,
               assignee: it.fields?.assignee?.displayName,
               updated: it.fields?.updated,
             }));
+          },
+        }),
+        // Create an issue with project/type inference
+        jira_create_issue: tool({
+          description:
+            "Create a Jira issue. Infers project/type if omitted (uses parent issue URL or default project).",
+          inputSchema: z.object({
+            summary: z.string().min(3),
+            description: z.string().optional(),
+            project_key: z.string().optional(),
+            issue_type: z.string().optional(),
+            parent_issue_url: z.string().url().optional(),
+            assignee_accountId: z.string().optional(),
+            labels: z.array(z.string()).optional(),
+          }),
+          execute: async ({
+            summary,
+            description,
+            project_key,
+            issue_type,
+            parent_issue_url,
+            assignee_accountId,
+            labels,
+          }) => {
+            // Resolve project
+            let projectKey =
+              project_key ||
+              (parent_issue_url
+                ? projectKeyFromIssueUrl(parent_issue_url)
+                : JIRA_DEFAULT_PROJECT);
+            if (!projectKey)
+              throw new Error(
+                "project_key is required (or provide parent_issue_url or set JIRA_DEFAULT_PROJECT)",
+              );
+
+            // Allowed types and resolution
+            const allowed = (await getProjectIssueTypes(projectKey)).map(
+              String,
+            );
+            const preferredOrder = [
+              "Story",
+              "Task",
+              "Bug",
+              "Idea",
+              "Epic",
+              "Sub-task",
+            ];
+
+            // If parent provided and Sub-task allowed, prefer Sub-task
+            let resolvedType = issue_type
+              ? canonicalizeIssueType(issue_type)
+              : undefined;
+            if (
+              !resolvedType &&
+              parent_issue_url &&
+              allowed.find((n) => n.toLowerCase() === "sub-task")
+            ) {
+              resolvedType = "Sub-task";
+            }
+            if (!resolvedType) {
+              // pick from preferred order if allowed; else first allowed; else fallback Task
+              const found = preferredOrder.find((t) =>
+                allowed.some((n) => n.toLowerCase() === t.toLowerCase()),
+              );
+              resolvedType = found || allowed[0] || "Task";
+            }
+
+            // Validate type
+            const allowedLower = new Set(allowed.map((n) => n.toLowerCase()));
+            if (
+              allowed.length &&
+              !allowedLower.has(resolvedType.toLowerCase())
+            ) {
+              // fallback to first allowed
+              resolvedType = allowed[0];
+            }
+
+            // Build fields
+            const fields: any = {
+              project: { key: projectKey },
+              summary,
+              issuetype: { name: resolvedType },
+              description: toAdfDoc(description),
+            };
+            if (assignee_accountId)
+              fields.assignee = { accountId: assignee_accountId };
+            if (labels?.length) fields.labels = labels;
+
+            // Parent only for Sub-task
+            if (resolvedType.toLowerCase() === "sub-task") {
+              if (!parent_issue_url)
+                throw new Error(
+                  "parent_issue_url is required for Sub-task creation",
+                );
+              const parentKey = parseIssueKeyFromUrl(parent_issue_url);
+              fields.parent = { key: parentKey };
+            }
+
+            const created = await postJson<any>(`/rest/api/3/issue`, {
+              fields,
+            });
+            const key = created.key;
+            return {
+              key,
+              url: JIRA_SITE_BASE ? `${JIRA_SITE_BASE}/browse/${key}` : null,
+              projectKey,
+              issueType: resolvedType,
+            };
           },
         }),
       },
