@@ -6,7 +6,7 @@
   "dependencies": {
     "@types/node": "^24.5.2",
     "ai": "^5.0.56",
-    "blink": "^0.1.54",
+    "blink": "^0.1.61",
     "esbuild": "^0.25.10",
     "zod": "^4.1.11"
   }
