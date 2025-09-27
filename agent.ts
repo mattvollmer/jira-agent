@@ -92,7 +92,8 @@ function parseIssueKeyFromUrl(issueUrl: string): string {
 
 function projectKeyFromIssueUrl(issueUrl: string): string {
   const key = parseIssueKeyFromUrl(issueUrl);
-  return key.split("-")[0];
+  const hyphen = key.indexOf("-");
+  return hyphen > 0 ? key.slice(0, hyphen) : key;
 }
 
 function apiBase(): string {
