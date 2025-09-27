@@ -248,6 +248,22 @@ function buildAdfComment(
   };
 }
 
+// JQL helpers for list tools
+function q(s: string) {
+  return `"${s.replace(/"/g, '\\"')}"`;
+}
+function jqlIn(field: string, values: string[]) {
+  if (!values.length) return "";
+  return `${field} in (${values.map(q).join(", ")})`;
+}
+function jqlAssignee(accountId?: string) {
+  if (!accountId) return "";
+  return `assignee in (accountId(${q(accountId)}))`;
+}
+function jqlAnd(parts: string[]) {
+  return parts.filter(Boolean).join(" AND ");
+}
+
 export default blink.agent({
   async sendMessages({ messages }) {
     return streamText({
@@ -271,19 +287,6 @@ Use the Jira tools provided when given a Jira link.`,
               siteBase: JIRA_SITE_BASE ?? null,
               email: JIRA_EMAIL ?? null,
               exampleMyself: joinApi("/rest/api/3/myself"),
-            };
-          },
-        }),
-        // Jira connectivity test
-        jira_ping: tool({
-          description: "Verify Jira credentials and site access via /myself",
-          inputSchema: z.object({}),
-          execute: async () => {
-            const me = await getJson<JiraMyself>("/rest/api/3/myself");
-            return {
-              accountId: me.accountId,
-              displayName: me.displayName,
-              email: JIRA_EMAIL,
             };
           },
         }),
@@ -416,6 +419,84 @@ Use the Jira tools provided when given a Jira link.`,
               accountId: u.accountId,
               displayName: u.displayName,
               emailAddress: u.emailAddress,
+            }));
+          },
+        }),
+        // List projects
+        jira_list_projects: tool({
+          description: "List Jira projects with key, id, name, and browse URL",
+          inputSchema: z.object({
+            query: z.string().optional(),
+            start_at: z.number().int().min(0).default(0),
+            limit: z.number().int().positive().max(100).default(50),
+          }),
+          execute: async ({ query, start_at, limit }) => {
+            const res = await getJson<any>(`/rest/api/3/project/search`, {
+              startAt: String(start_at),
+              maxResults: String(limit),
+              query: query ?? "",
+            });
+            const values = res.values ?? [];
+            return values.map((p: any) => ({
+              id: p.id,
+              key: p.key,
+              name: p.name,
+              type: p.projectTypeKey,
+              url: JIRA_SITE_BASE ? `${JIRA_SITE_BASE}/browse/${p.key}` : null,
+            }));
+          },
+        }),
+        // List tasks (issues) in a project with optional filters
+        jira_list_tasks: tool({
+          description:
+            "List Task issues for a project, with optional status and assignee filters",
+          inputSchema: z.object({
+            project_key: z.string().min(1),
+            types: z.array(z.string()).default(["Task"]),
+            statuses: z.array(z.string()).default([]),
+            assignee_accountId: z.string().optional(),
+            limit: z.number().int().positive().max(100).default(50),
+            start_at: z.number().int().min(0).default(0),
+          }),
+          execute: async ({
+            project_key,
+            types,
+            statuses,
+            assignee_accountId,
+            limit,
+            start_at,
+          }) => {
+            const parts: string[] = [
+              `project = ${project_key}`,
+              types.length ? jqlIn("issuetype", types) : "",
+              statuses.length ? jqlIn("status", statuses) : "",
+              jqlAssignee(assignee_accountId),
+            ];
+            const jql = jqlAnd(parts);
+            const search = await getJson<any>(`/rest/api/3/search`, {
+              jql,
+              startAt: String(start_at),
+              maxResults: String(limit),
+              fields: [
+                "summary",
+                "status",
+                "issuetype",
+                "priority",
+                "assignee",
+                "updated",
+              ].join(","),
+              orderBy: "-updated",
+            });
+            const issues = search.issues ?? [];
+            return issues.map((it: any) => ({
+              key: it.key,
+              url: JIRA_SITE_BASE ? `${JIRA_SITE_BASE}/browse/${it.key}` : null,
+              summary: it.fields?.summary,
+              status: it.fields?.status?.name,
+              type: it.fields?.issuetype?.name,
+              priority: it.fields?.priority?.name,
+              assignee: it.fields?.assignee?.displayName,
+              updated: it.fields?.updated,
             }));
           },
         }),
