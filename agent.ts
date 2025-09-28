@@ -161,6 +161,35 @@ blink
           : null;
         if (raw) ghMeta = JSON.parse(raw);
       } catch {}
+      // Fallback: parse TARGET line from most recent user message
+      if (!ghMeta) {
+        try {
+          const lastUser = [...messages]
+            .reverse()
+            .find((m: any) => m.role === "user");
+          const text =
+            typeof lastUser?.content === "string"
+              ? lastUser.content
+              : (lastUser?.content?.find?.((p: any) => p.text)?.text ?? "");
+          const m = text.match(
+            /TARGET:\s*([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\s*#(\d+)/i,
+          );
+          if (m) {
+            const owner = m[1];
+            const repo = m[2];
+            const number = Number(m[3]);
+            // Infer kind from the event line if present
+            const evLine = (
+              text.match(/GitHub event:\s*([^\n]+)/i)?.[1] ?? ""
+            ).toLowerCase();
+            const kind: "pr" | "issue" = /pull_request|check_run/.test(evLine)
+              ? "pr"
+              : "issue";
+            ghMeta = { kind, owner, repo, number };
+            console.log("sendMessages.fallbackGhMeta", ghMeta);
+          }
+        } catch {}
+      }
 
       try {
         console.log("sendMessages", {
