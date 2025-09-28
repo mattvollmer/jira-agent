@@ -118,6 +118,21 @@ function parseGhPrChatId(
   return { owner, repo, prNumber };
 }
 
+function parseGhIssueChatId(
+  id?: string | null,
+): { owner: string; repo: string; issueNumber: number } | null {
+  if (!id) return null;
+  if (!id.startsWith("gh-issue~")) return null;
+  const parts = id.split("~");
+  if (parts.length !== 4) return null;
+  const owner = parts[1] ?? "";
+  const repo = parts[2] ?? "";
+  const issueNumber = Number(parts[3]);
+  if (!owner || !repo || !Number.isFinite(issueNumber) || issueNumber <= 0)
+    return null;
+  return { owner, repo, issueNumber };
+}
+
 blink
   .agent({
     async sendMessages({ messages, chat }) {
@@ -134,10 +149,12 @@ blink
       } catch {}
 
       const gh = parseGhPrChatId(chat?.id);
+      const ghIssue = parseGhIssueChatId(chat?.id);
       try {
         console.log("sendMessages", {
           chatId: chat?.id,
-          isGh: !!gh,
+          isGhPr: !!gh,
+          isGhIssue: !!ghIssue,
           msgCount: messages.length,
         });
       } catch {}
@@ -148,7 +165,9 @@ blink
           system: [
             gh
               ? "You are a GitHub assistant responding in pull request discussions."
-              : "You are a Jira assistant responding in issue comments.",
+              : ghIssue
+                ? "You are a GitHub assistant responding in issue discussions."
+                : "You are a Jira assistant responding in issue comments.",
             "- Be concise, direct, and helpful.",
             "- No emojis or headers.",
             "- If unclear, ask one brief clarifying question.",
@@ -159,9 +178,14 @@ blink
             gh
               ? `- GitHub PR: ${gh.owner}/${gh.repo} #${gh.prNumber}`
               : undefined,
+            ghIssue
+              ? `- GitHub Issue: ${ghIssue.owner}/${ghIssue.repo} #${ghIssue.issueNumber}`
+              : undefined,
             gh
               ? "- Always post a brief summary using github_create_issue_comment (set issue_number to the PR number)."
-              : undefined,
+              : ghIssue
+                ? "- Always post a brief summary using github_create_issue_comment (set issue_number to the Issue number)."
+                : undefined,
           ]
             .filter(Boolean)
             .join("\n"),
@@ -284,12 +308,14 @@ blink
               e.payload.sender?.login === GITHUB_BOT_LOGIN
             )
               return;
-            if (!e.payload.issue?.pull_request) return; // only PR issues
             const owner = e.payload.repository.owner.login;
             const repo = e.payload.repository.name;
             const number = e.payload.issue.number;
+            const isPr = !!e.payload.issue?.pull_request;
             const chat = await blink.chat.upsert(
-              `gh-pr~${owner}~${repo}~${number}`,
+              isPr
+                ? `gh-pr~${owner}~${repo}~${number}`
+                : `gh-issue~${owner}~${repo}~${number}`,
             );
             const text = e.payload.comment?.body || "";
             const msg = [
