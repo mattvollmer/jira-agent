@@ -134,99 +134,111 @@ blink
       } catch {}
 
       const gh = parseGhPrChatId(chat?.id);
+      try {
+        console.log("sendMessages", {
+          chatId: chat?.id,
+          isGh: !!gh,
+          msgCount: messages.length,
+        });
+      } catch {}
 
-      return streamText({
-        model: "anthropic/claude-sonnet-4",
-        system: [
-          gh
-            ? "You are a GitHub assistant responding in pull request discussions."
-            : "You are a Jira assistant responding in issue comments.",
-          "- Be concise, direct, and helpful.",
-          "- No emojis or headers.",
-          "- If unclear, ask one brief clarifying question.",
-          meta?.issueUrl ? `- Issue URL: ${meta.issueUrl}` : undefined,
-          meta?.issueUrl
-            ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
-            : undefined,
-          gh
-            ? `- GitHub PR: ${gh.owner}/${gh.repo} #${gh.prNumber}`
-            : undefined,
-          gh
-            ? "- When a PR comment is useful, post it using github_create_issue_comment (set issue_number to the PR number). Avoid trivial or duplicate comments."
-            : undefined,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        messages: convertToModelMessages(messages),
-        tools: (() => {
-          const tools: Record<string, any> = {
-            get_current_date: tool({
-              description:
-                "Get the current UTC date/time with weekday and human-formatted output",
-              inputSchema: z.object({}),
-              execute: async () => {
-                const now = new Date();
-                const iso = now.toISOString();
-                const weekdayNames = [
-                  "Sunday",
-                  "Monday",
-                  "Tuesday",
-                  "Wednesday",
-                  "Thursday",
-                  "Friday",
-                  "Saturday",
-                ];
-                const monthNames = [
-                  "January",
-                  "February",
-                  "March",
-                  "April",
-                  "May",
-                  "June",
-                  "July",
-                  "August",
-                  "September",
-                  "October",
-                  "November",
-                  "December",
-                ];
-                const weekdayIndex = now.getUTCDay();
-                return {
-                  iso,
-                  date: iso.slice(0, 10),
-                  time: iso.slice(11, 19) + "Z",
-                  epochMillis: now.getTime(),
-                  timezone: "UTC",
-                  weekday: weekdayNames[weekdayIndex],
-                  weekdayIndex,
-                  month: monthNames[now.getUTCMonth()],
-                  monthIndex: now.getUTCMonth(),
-                  day: now.getUTCDate(),
-                  year: now.getUTCFullYear(),
-                  human: now.toUTCString(),
-                  rfc1123: now.toUTCString(),
-                  offsetMinutes: 0,
-                };
-              },
-            }),
-            ...createJiraTools({
-              issueUrl: meta?.issueUrl ?? null,
-              authorId: meta?.authorId ?? null,
-            }),
-            // --- GitHub tools (all, prefixed) ---
-            ...blink.tools.prefix(
-              blink.tools.with(github.tools, {
-                appAuth: async () => getGithubAppContext(),
+      try {
+        return streamText({
+          model: "anthropic/claude-sonnet-4",
+          system: [
+            gh
+              ? "You are a GitHub assistant responding in pull request discussions."
+              : "You are a Jira assistant responding in issue comments.",
+            "- Be concise, direct, and helpful.",
+            "- No emojis or headers.",
+            "- If unclear, ask one brief clarifying question.",
+            meta?.issueUrl ? `- Issue URL: ${meta.issueUrl}` : undefined,
+            meta?.issueUrl
+              ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
+              : undefined,
+            gh
+              ? `- GitHub PR: ${gh.owner}/${gh.repo} #${gh.prNumber}`
+              : undefined,
+            gh
+              ? "- Always post a brief summary using github_create_issue_comment (set issue_number to the PR number)."
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          messages: convertToModelMessages(messages),
+          tools: (() => {
+            const tools: Record<string, any> = {
+              get_current_date: tool({
+                description:
+                  "Get the current UTC date/time with weekday and human-formatted output",
+                inputSchema: z.object({}),
+                execute: async () => {
+                  const now = new Date();
+                  const iso = now.toISOString();
+                  const weekdayNames = [
+                    "Sunday",
+                    "Monday",
+                    "Tuesday",
+                    "Wednesday",
+                    "Thursday",
+                    "Friday",
+                    "Saturday",
+                  ];
+                  const monthNames = [
+                    "January",
+                    "February",
+                    "March",
+                    "April",
+                    "May",
+                    "June",
+                    "July",
+                    "August",
+                    "September",
+                    "October",
+                    "November",
+                    "December",
+                  ];
+                  const weekdayIndex = now.getUTCDay();
+                  return {
+                    iso,
+                    date: iso.slice(0, 10),
+                    time: iso.slice(11, 19) + "Z",
+                    epochMillis: now.getTime(),
+                    timezone: "UTC",
+                    weekday: weekdayNames[weekdayIndex],
+                    weekdayIndex,
+                    month: monthNames[now.getUTCMonth()],
+                    monthIndex: now.getUTCMonth(),
+                    day: now.getUTCDate(),
+                    year: now.getUTCFullYear(),
+                    human: now.toUTCString(),
+                    rfc1123: now.toUTCString(),
+                    offsetMinutes: 0,
+                  };
+                },
               }),
-              "github_",
-            ),
-          };
-          if (!meta?.issueUrl && tools["jira_reply"]) {
-            delete tools["jira_reply"];
-          }
-          return tools as any;
-        })(),
-      });
+              ...createJiraTools({
+                issueUrl: meta?.issueUrl ?? null,
+                authorId: meta?.authorId ?? null,
+              }),
+              // --- GitHub tools (all, prefixed) ---
+              ...blink.tools.prefix(
+                blink.tools.with(github.tools, {
+                  appAuth: async () => getGithubAppContext(),
+                }),
+                "github_",
+              ),
+            };
+            if (!meta?.issueUrl && tools["jira_reply"]) {
+              delete tools["jira_reply"];
+            }
+            return tools as any;
+          })(),
+        });
+      } catch (err) {
+        console.error("streamText error", err);
+        throw err;
+      }
     },
 
     async onRequest(request) {
@@ -277,11 +289,19 @@ blink
             ]
               .filter(Boolean)
               .join("\n");
+            console.log("gh.enqueue", {
+              evt: "issue_comment",
+              owner,
+              repo,
+              pr: number,
+              by: e.payload.sender?.login,
+            });
             await blink.chat.message(
               chat.id,
               { role: "user", parts: [{ type: "text", text: msg }] },
               { behavior: "interrupt" },
             );
+            console.log("gh.enqueued", { chatId: chat.id });
           } catch (err) {
             console.error("issue_comment handler error", err);
           }
@@ -311,11 +331,19 @@ blink
             ]
               .filter(Boolean)
               .join("\n");
+            console.log("gh.enqueue", {
+              evt: "pull_request_review_comment",
+              owner,
+              repo,
+              pr: number,
+              by: e.payload.sender?.login,
+            });
             await blink.chat.message(
               chat.id,
               { role: "user", parts: [{ type: "text", text: msg }] },
               { behavior: "interrupt" },
             );
+            console.log("gh.enqueued", { chatId: chat.id });
           } catch (err) {
             console.error("pull_request_review_comment handler error", err);
           }
@@ -352,11 +380,19 @@ blink
               ]
                 .filter(Boolean)
                 .join("\n");
+              console.log("gh.enqueue", {
+                evt: "check_run.completed",
+                owner,
+                repo,
+                pr: number,
+                conclusion: concl,
+              });
               await blink.chat.message(
                 chat.id,
                 { role: "user", parts: [{ type: "text", text: msg }] },
                 { behavior: "interrupt" },
               );
+              console.log("gh.enqueued", { chatId: chat.id });
             }
           } catch (err) {
             console.error("check_run.completed handler error", err);
