@@ -812,6 +812,7 @@ blink
                 type: it.fields?.issuetype?.name,
                 priority: it.fields?.priority?.name,
                 assignee: it.fields?.assignee?.displayName,
+                assigneeAccountId: it.fields?.assignee?.accountId,
                 updated: it.fields?.updated,
               }));
             },
