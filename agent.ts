@@ -542,24 +542,6 @@ blink
               };
             },
           }),
-          // Quick env visibility
-          jira_env_check: tool({
-            description:
-              "Report which Jira env vars are visible and the computed API base",
-            inputSchema: z.object({}),
-            execute: async () => {
-              return {
-                cloudIdPresent: !!JIRA_CLOUD_ID,
-                emailPresent: !!JIRA_EMAIL,
-                tokenPresent: !!JIRA_API_TOKEN,
-                apiBase: apiBase(),
-                siteBase: JIRA_SITE_BASE ?? null,
-                email: JIRA_EMAIL ?? null,
-                exampleMyself: joinApi("/rest/api/3/myself"),
-                acceptLanguage: JIRA_ACCEPT_LANGUAGE,
-              };
-            },
-          }),
           // Delivery tool: post final response to Jira for this chat's issue
           jira_reply: tool({
             description:
