@@ -27,7 +27,7 @@ function rid() {
 function log(event: string, data?: Record<string, unknown>) {
   try {
     console.log(
-      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data })
+      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data }),
     );
   } catch {}
 }
@@ -63,66 +63,74 @@ blink
           "- No emojis or headers.",
           "- If unclear, ask one brief clarifying question.",
           meta?.issueUrl ? `- Issue URL: ${meta.issueUrl}` : undefined,
-          "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text.",
+          meta?.issueUrl
+            ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
+            : "- Do not call jira_reply in this chat. Provide your answer directly or use jira_add_comment only when an explicit issue_url is provided.",
         ]
           .filter(Boolean)
           .join("\n"),
         messages: convertToModelMessages(messages),
-        tools: {
-          get_current_date: tool({
-            description:
-              "Get the current UTC date/time with weekday and human-formatted output",
-            inputSchema: z.object({}),
-            execute: async () => {
-              const now = new Date();
-              const iso = now.toISOString();
-              const weekdayNames = [
-                "Sunday",
-                "Monday",
-                "Tuesday",
-                "Wednesday",
-                "Thursday",
-                "Friday",
-                "Saturday",
-              ];
-              const monthNames = [
-                "January",
-                "February",
-                "March",
-                "April",
-                "May",
-                "June",
-                "July",
-                "August",
-                "September",
-                "October",
-                "November",
-                "December",
-              ];
-              const weekdayIndex = now.getUTCDay();
-              return {
-                iso,
-                date: iso.slice(0, 10),
-                time: iso.slice(11, 19) + "Z",
-                epochMillis: now.getTime(),
-                timezone: "UTC",
-                weekday: weekdayNames[weekdayIndex],
-                weekdayIndex,
-                month: monthNames[now.getUTCMonth()],
-                monthIndex: now.getUTCMonth(),
-                day: now.getUTCDate(),
-                year: now.getUTCFullYear(),
-                human: now.toUTCString(),
-                rfc1123: now.toUTCString(),
-                offsetMinutes: 0,
-              };
-            },
-          }),
-          ...createJiraTools({
-            issueUrl: meta?.issueUrl ?? null,
-            authorId: meta?.authorId ?? null,
-          }),
-        },
+        tools: (() => {
+          const tools: Record<string, any> = {
+            get_current_date: tool({
+              description:
+                "Get the current UTC date/time with weekday and human-formatted output",
+              inputSchema: z.object({}),
+              execute: async () => {
+                const now = new Date();
+                const iso = now.toISOString();
+                const weekdayNames = [
+                  "Sunday",
+                  "Monday",
+                  "Tuesday",
+                  "Wednesday",
+                  "Thursday",
+                  "Friday",
+                  "Saturday",
+                ];
+                const monthNames = [
+                  "January",
+                  "February",
+                  "March",
+                  "April",
+                  "May",
+                  "June",
+                  "July",
+                  "August",
+                  "September",
+                  "October",
+                  "November",
+                  "December",
+                ];
+                const weekdayIndex = now.getUTCDay();
+                return {
+                  iso,
+                  date: iso.slice(0, 10),
+                  time: iso.slice(11, 19) + "Z",
+                  epochMillis: now.getTime(),
+                  timezone: "UTC",
+                  weekday: weekdayNames[weekdayIndex],
+                  weekdayIndex,
+                  month: monthNames[now.getUTCMonth()],
+                  monthIndex: now.getUTCMonth(),
+                  day: now.getUTCDate(),
+                  year: now.getUTCFullYear(),
+                  human: now.toUTCString(),
+                  rfc1123: now.toUTCString(),
+                  offsetMinutes: 0,
+                };
+              },
+            }),
+            ...createJiraTools({
+              issueUrl: meta?.issueUrl ?? null,
+              authorId: meta?.authorId ?? null,
+            }),
+          };
+          if (!meta?.issueUrl && tools["jira_reply"]) {
+            delete tools["jira_reply"];
+          }
+          return tools as any;
+        })(),
       });
     },
 
@@ -186,7 +194,7 @@ blink
       if (!adfBody && commentId) {
         try {
           const fetched = await getJson<any>(
-            `/rest/api/3/issue/${issueKey}/comment/${commentId}`
+            `/rest/api/3/issue/${issueKey}/comment/${commentId}`,
           );
           adfBody = fetched?.body;
         } catch (e) {
@@ -212,14 +220,14 @@ blink
       const userText = adfText(adfBody).trim();
       const base = (getJiraSiteBase() || "https://example.invalid").replace(
         /\/$/,
-        ""
+        "",
       );
       const issueUrl = `${base}/browse/${issueKey}`;
 
       const chat = await blink.chat.upsert(`jira-${issueKey}`);
       await blink.storage.kv.set(
         `jira-meta-${chat.id}`,
-        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null })
+        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
       );
 
       const composed = [
@@ -232,7 +240,7 @@ blink
       await blink.chat.message(
         chat.id,
         { role: "user", parts: [{ type: "text", text: composed }] },
-        { behavior: "interrupt" }
+        { behavior: "interrupt" },
       );
 
       log("chat_enqueued", { reqId, chatId: chat.id, issueKey });
