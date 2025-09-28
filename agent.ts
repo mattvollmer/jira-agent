@@ -148,13 +148,24 @@ blink
         if (raw) meta = JSON.parse(raw);
       } catch {}
 
-      const gh = parseGhPrChatId(chat?.id);
-      const ghIssue = parseGhIssueChatId(chat?.id);
+      // Load GitHub metadata for this chat (if any)
+      let ghMeta: null | {
+        kind: "pr" | "issue";
+        owner: string;
+        repo: string;
+        number: number;
+      } = null;
+      try {
+        const raw = chat
+          ? await blink.storage.kv.get(`gh-meta-${chat.id}`)
+          : null;
+        if (raw) ghMeta = JSON.parse(raw);
+      } catch {}
+
       try {
         console.log("sendMessages", {
           chatId: chat?.id,
-          isGhPr: !!gh,
-          isGhIssue: !!ghIssue,
+          ghMeta,
           msgCount: messages.length,
         });
       } catch {}
@@ -163,9 +174,9 @@ blink
         return streamText({
           model: "anthropic/claude-sonnet-4",
           system: [
-            gh
+            ghMeta?.kind === "pr"
               ? "You are a GitHub assistant responding in pull request discussions."
-              : ghIssue
+              : ghMeta?.kind === "issue"
                 ? "You are a GitHub assistant responding in issue discussions."
                 : "You are a Jira assistant responding in issue comments.",
             "- Be concise, direct, and helpful.",
@@ -175,17 +186,14 @@ blink
             meta?.issueUrl
               ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
               : undefined,
-            gh
-              ? `- GitHub PR: ${gh.owner}/${gh.repo} #${gh.prNumber}`
-              : undefined,
-            ghIssue
-              ? `- GitHub Issue: ${ghIssue.owner}/${ghIssue.repo} #${ghIssue.issueNumber}`
-              : undefined,
-            gh
-              ? "- Always post a brief summary using github_create_issue_comment (set issue_number to the PR number)."
-              : ghIssue
-                ? "- Always post a brief summary using github_create_issue_comment (set issue_number to the Issue number)."
+            ghMeta?.kind === "pr"
+              ? `- GitHub PR: ${ghMeta.owner}/${ghMeta.repo} #${ghMeta.number}`
+              : ghMeta?.kind === "issue"
+                ? `- GitHub Issue: ${ghMeta.owner}/${ghMeta.repo} #${ghMeta.number}`
                 : undefined,
+            ghMeta?.kind
+              ? "- Always post a brief summary using github_create_issue_comment (set issue_number accordingly)."
+              : undefined,
           ]
             .filter(Boolean)
             .join("\n"),
@@ -325,6 +333,17 @@ blink
                 ? `gh-pr~${owner}~${repo}~${number}`
                 : `gh-issue~${owner}~${repo}~${number}`,
             );
+            try {
+              await blink.storage.kv.set(
+                `gh-meta-${chat.id}`,
+                JSON.stringify({
+                  kind: isPr ? "pr" : "issue",
+                  owner,
+                  repo,
+                  number,
+                }),
+              );
+            } catch {}
             const text = e.payload.comment?.body || "";
             const msg = [
               `GitHub event: issue_comment by ${e.payload.sender?.login}`,
@@ -367,6 +386,12 @@ blink
             const chat = await blink.chat.upsert(
               `gh-pr~${owner}~${repo}~${number}`,
             );
+            try {
+              await blink.storage.kv.set(
+                `gh-meta-${chat.id}`,
+                JSON.stringify({ kind: "pr", owner, repo, number }),
+              );
+            } catch {}
             const text = e.payload.comment?.body || "";
             const msg = [
               `GitHub event: pull_request_review_comment by ${e.payload.sender?.login}`,
@@ -409,6 +434,12 @@ blink
             const chat = await blink.chat.upsert(
               `gh-pr~${owner}~${repo}~${number}`,
             );
+            try {
+              await blink.storage.kv.set(
+                `gh-meta-${chat.id}`,
+                JSON.stringify({ kind: "pr", owner, repo, number }),
+              );
+            } catch {}
             const state = e.payload.review?.state || "";
             const body = e.payload.review?.body || "";
             const msg = [
@@ -453,6 +484,12 @@ blink
               const chat = await blink.chat.upsert(
                 `gh-pr~${owner}~${repo}~${number}`,
               );
+              try {
+                await blink.storage.kv.set(
+                  `gh-meta-${chat.id}`,
+                  JSON.stringify({ kind: "pr", owner, repo, number }),
+                );
+              } catch {}
               const details = [
                 `Check: ${e.payload.check_run.name}`,
                 `Conclusion: ${concl}`,
