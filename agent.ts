@@ -413,7 +413,7 @@ blink
         return webhooks
           .verifyAndReceive({
             id,
-            name: event,
+            name: event as any,
             payload: await request.text(),
             signature,
           })
