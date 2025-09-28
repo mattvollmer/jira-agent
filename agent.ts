@@ -1,9 +1,6 @@
 import { convertToModelMessages, streamText, tool } from "ai";
 import * as blink from "blink";
 import { z } from "zod";
-
-const MODEL = "anthropic/claude-sonnet-4";
-
 import {
   createJiraTools,
   adfContainsMention,
@@ -30,7 +27,7 @@ function rid() {
 function log(event: string, data?: Record<string, unknown>) {
   try {
     console.log(
-      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data }),
+      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data })
     );
   } catch {}
 }
@@ -59,7 +56,7 @@ blink
       } catch {}
 
       return streamText({
-        model: MODEL,
+        model: "anthropic/claude-sonnet-4",
         system: [
           "You are a Jira assistant responding in issue comments.",
           "- Be concise, direct, and helpful.",
@@ -189,7 +186,7 @@ blink
       if (!adfBody && commentId) {
         try {
           const fetched = await getJson<any>(
-            `/rest/api/3/issue/${issueKey}/comment/${commentId}`,
+            `/rest/api/3/issue/${issueKey}/comment/${commentId}`
           );
           adfBody = fetched?.body;
         } catch (e) {
@@ -215,14 +212,14 @@ blink
       const userText = adfText(adfBody).trim();
       const base = (getJiraSiteBase() || "https://example.invalid").replace(
         /\/$/,
-        "",
+        ""
       );
       const issueUrl = `${base}/browse/${issueKey}`;
 
       const chat = await blink.chat.upsert(`jira-${issueKey}`);
       await blink.storage.kv.set(
         `jira-meta-${chat.id}`,
-        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
+        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null })
       );
 
       const composed = [
@@ -235,7 +232,7 @@ blink
       await blink.chat.message(
         chat.id,
         { role: "user", parts: [{ type: "text", text: composed }] },
-        { behavior: "interrupt" },
+        { behavior: "interrupt" }
       );
 
       log("chat_enqueued", { reqId, chatId: chat.id, issueKey });
