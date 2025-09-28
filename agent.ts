@@ -10,6 +10,69 @@ import {
   getJson,
 } from "./jira";
 import type { JiraMyself } from "./jira";
+import * as github from "@blink-sdk/github";
+import { Webhooks } from "@octokit/webhooks";
+import { Octokit } from "@octokit/core";
+import { createAppAuth } from "@octokit/auth-app";
+
+const GITHUB_APP_ID = process.env.GITHUB_APP_ID?.trim();
+const GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY?.trim();
+const GITHUB_APP_INSTALLATION_ID =
+  process.env.GITHUB_APP_INSTALLATION_ID?.trim();
+const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET?.trim();
+const GITHUB_BOT_LOGIN = process.env.GITHUB_BOT_LOGIN?.trim();
+
+function getGithubAppContext() {
+  if (
+    !GITHUB_APP_ID ||
+    !GITHUB_APP_PRIVATE_KEY ||
+    !GITHUB_APP_INSTALLATION_ID
+  ) {
+    throw new Error(
+      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set",
+    );
+  }
+  return {
+    appId: GITHUB_APP_ID,
+    privateKey: Buffer.from(GITHUB_APP_PRIVATE_KEY, "base64").toString("utf-8"),
+    installationId: Number(GITHUB_APP_INSTALLATION_ID),
+  } as const;
+}
+
+async function getOctokit(): Promise<Octokit> {
+  if (
+    !GITHUB_APP_ID ||
+    !GITHUB_APP_PRIVATE_KEY ||
+    !GITHUB_APP_INSTALLATION_ID
+  ) {
+    throw new Error(
+      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set",
+    );
+  }
+  const auth = createAppAuth({
+    appId: Number(GITHUB_APP_ID),
+    privateKey: Buffer.from(GITHUB_APP_PRIVATE_KEY, "base64").toString("utf-8"),
+    installationId: Number(GITHUB_APP_INSTALLATION_ID),
+  });
+  const { token } = await auth({ type: "installation" });
+  return new Octokit({ auth: token });
+}
+
+async function postPRComment(
+  octokit: Octokit,
+  repo: { owner: string; repo: string; number: number },
+  body: string,
+) {
+  await octokit.request(
+    "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    {
+      owner: repo.owner,
+      repo: repo.repo,
+      issue_number: repo.number,
+      body,
+    },
+  );
+}
 
 const JIRA_AUTOMATION_SECRET = process.env.JIRA_AUTOMATION_SECRET?.trim();
 const JIRA_SERVICE_ACCOUNT_ID = process.env.JIRA_SERVICE_ACCOUNT_ID?.trim();
@@ -27,7 +90,7 @@ function rid() {
 function log(event: string, data?: Record<string, unknown>) {
   try {
     console.log(
-      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data })
+      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data }),
     );
   } catch {}
 }
@@ -38,6 +101,36 @@ async function getServiceAccountId(): Promise<string> {
   const me = await getJson<JiraMyself>(`/rest/api/3/myself`);
   cachedServiceAccountId = me.accountId;
   return cachedServiceAccountId;
+}
+
+function parseGhPrChatId(
+  id?: string | null,
+): { owner: string; repo: string; prNumber: number } | null {
+  if (!id) return null;
+  if (!id.startsWith("gh-pr~")) return null;
+  const parts = id.split("~");
+  if (parts.length !== 4) return null;
+  const owner = parts[1] ?? "";
+  const repo = parts[2] ?? "";
+  const prNumber = Number(parts[3]);
+  if (!owner || !repo || !Number.isFinite(prNumber) || prNumber <= 0)
+    return null;
+  return { owner, repo, prNumber };
+}
+
+function parseGhIssueChatId(
+  id?: string | null,
+): { owner: string; repo: string; issueNumber: number } | null {
+  if (!id) return null;
+  if (!id.startsWith("gh-issue~")) return null;
+  const parts = id.split("~");
+  if (parts.length !== 4) return null;
+  const owner = parts[1] ?? "";
+  const repo = parts[2] ?? "";
+  const issueNumber = Number(parts[3]);
+  if (!owner || !repo || !Number.isFinite(issueNumber) || issueNumber <= 0)
+    return null;
+  return { owner, repo, issueNumber };
 }
 
 blink
@@ -55,83 +148,166 @@ blink
         if (raw) meta = JSON.parse(raw);
       } catch {}
 
-      return streamText({
-        model: "anthropic/claude-sonnet-4",
-        system: [
-          "You are a Jira assistant responding in issue comments.",
-          "- Be concise, direct, and helpful.",
-          "- No emojis or headers.",
-          "- If unclear, ask one brief clarifying question.",
-          meta?.issueUrl ? `- Issue URL: ${meta.issueUrl}` : undefined,
-          meta?.issueUrl
-            ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
-            : "- Do not call jira_reply in this chat. Provide your answer directly or use jira_add_comment only when an explicit issue_url is provided.",
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        messages: convertToModelMessages(messages),
-        tools: (() => {
-          const tools: Record<string, any> = {
-            get_current_date: tool({
-              description:
-                "Get the current UTC date/time with weekday and human-formatted output",
-              inputSchema: z.object({}),
-              execute: async () => {
-                const now = new Date();
-                const iso = now.toISOString();
-                const weekdayNames = [
-                  "Sunday",
-                  "Monday",
-                  "Tuesday",
-                  "Wednesday",
-                  "Thursday",
-                  "Friday",
-                  "Saturday",
-                ];
-                const monthNames = [
-                  "January",
-                  "February",
-                  "March",
-                  "April",
-                  "May",
-                  "June",
-                  "July",
-                  "August",
-                  "September",
-                  "October",
-                  "November",
-                  "December",
-                ];
-                const weekdayIndex = now.getUTCDay();
-                return {
-                  iso,
-                  date: iso.slice(0, 10),
-                  time: iso.slice(11, 19) + "Z",
-                  epochMillis: now.getTime(),
-                  timezone: "UTC",
-                  weekday: weekdayNames[weekdayIndex],
-                  weekdayIndex,
-                  month: monthNames[now.getUTCMonth()],
-                  monthIndex: now.getUTCMonth(),
-                  day: now.getUTCDate(),
-                  year: now.getUTCFullYear(),
-                  human: now.toUTCString(),
-                  rfc1123: now.toUTCString(),
-                  offsetMinutes: 0,
-                };
-              },
-            }),
-            ...createJiraTools({
-              issueUrl: meta?.issueUrl ?? null,
-              authorId: meta?.authorId ?? null,
-            }),
-          };
-          if (!meta?.issueUrl && tools["jira_reply"]) {
-            delete tools["jira_reply"];
+      // Load GitHub metadata for this chat (if any)
+      let ghMeta: null | {
+        kind: "pr" | "issue";
+        owner: string;
+        repo: string;
+        number: number;
+      } = null;
+      try {
+        const raw = chat
+          ? await blink.storage.kv.get(`gh-meta-${chat.id}`)
+          : null;
+        if (raw) ghMeta = JSON.parse(raw);
+      } catch {}
+      // Fallback: parse TARGET line from most recent user message
+      if (!ghMeta) {
+        try {
+          const lastUser = [...messages]
+            .reverse()
+            .find((m: any) => m.role === "user");
+          const text =
+            typeof lastUser?.content === "string"
+              ? lastUser.content
+              : (lastUser?.content?.find?.((p: any) => p.text)?.text ?? "");
+          const m = text.match(
+            /TARGET:\s*([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\s*#(\d+)/i,
+          );
+          if (m) {
+            const owner = m[1];
+            const repo = m[2];
+            const number = Number(m[3]);
+            // Infer kind from the event line if present
+            const evLine = (
+              text.match(/GitHub event:\s*([^\n]+)/i)?.[1] ?? ""
+            ).toLowerCase();
+            const kind: "pr" | "issue" = /pull_request|check_run/.test(evLine)
+              ? "pr"
+              : "issue";
+            ghMeta = { kind, owner, repo, number };
+            console.log("sendMessages.fallbackGhMeta", ghMeta);
           }
-          return tools as any;
-        })(),
-      });
+        } catch {}
+      }
+
+      try {
+        console.log("sendMessages", {
+          chatId: chat?.id,
+          ghMeta,
+          msgCount: messages.length,
+        });
+      } catch {}
+
+      try {
+        return streamText({
+          model: "anthropic/claude-sonnet-4",
+          system: [
+            ghMeta?.kind === "pr"
+              ? "You are a GitHub assistant responding in pull request discussions."
+              : ghMeta?.kind === "issue"
+                ? "You are a GitHub assistant responding in issue discussions."
+                : "You are a Jira assistant responding in issue comments.",
+            "- Be concise, direct, and helpful.",
+            "- No emojis or headers.",
+            "- If unclear, ask one brief clarifying question.",
+            meta?.issueUrl ? `- Issue URL: ${meta.issueUrl}` : undefined,
+            meta?.issueUrl
+              ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
+              : undefined,
+            ghMeta?.kind === "pr"
+              ? `- GitHub PR: ${ghMeta.owner}/${ghMeta.repo} #${ghMeta.number}`
+              : ghMeta?.kind === "issue"
+                ? `- GitHub Issue: ${ghMeta.owner}/${ghMeta.repo} #${ghMeta.number}`
+                : undefined,
+            ghMeta?.kind
+              ? "- Always post a brief summary using github_create_issue_comment (set issue_number accordingly)."
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          messages: convertToModelMessages(messages),
+          tools: (() => {
+            const tools: Record<string, any> = {
+              get_current_date: tool({
+                description:
+                  "Get the current UTC date/time with weekday and human-formatted output",
+                inputSchema: z.object({}),
+                execute: async () => {
+                  const now = new Date();
+                  const iso = now.toISOString();
+                  const weekdayNames = [
+                    "Sunday",
+                    "Monday",
+                    "Tuesday",
+                    "Wednesday",
+                    "Thursday",
+                    "Friday",
+                    "Saturday",
+                  ];
+                  const monthNames = [
+                    "January",
+                    "February",
+                    "March",
+                    "April",
+                    "May",
+                    "June",
+                    "July",
+                    "August",
+                    "September",
+                    "October",
+                    "November",
+                    "December",
+                  ];
+                  const weekdayIndex = now.getUTCDay();
+                  return {
+                    iso,
+                    date: iso.slice(0, 10),
+                    time: iso.slice(11, 19) + "Z",
+                    epochMillis: now.getTime(),
+                    timezone: "UTC",
+                    weekday: weekdayNames[weekdayIndex],
+                    weekdayIndex,
+                    month: monthNames[now.getUTCMonth()],
+                    monthIndex: now.getUTCMonth(),
+                    day: now.getUTCDate(),
+                    year: now.getUTCFullYear(),
+                    human: now.toUTCString(),
+                    rfc1123: now.toUTCString(),
+                    offsetMinutes: 0,
+                  };
+                },
+              }),
+              ...createJiraTools({
+                issueUrl: meta?.issueUrl ?? null,
+                authorId: meta?.authorId ?? null,
+              }),
+              // --- GitHub tools (all, prefixed) ---
+              ...blink.tools.prefix(
+                blink.tools.with(github.tools, {
+                  appAuth: async () => getGithubAppContext(),
+                }),
+                "github_",
+              ),
+            };
+            if (!meta?.issueUrl && tools["jira_reply"]) {
+              delete tools["jira_reply"];
+            }
+            try {
+              const keys = Object.keys(tools).sort();
+              console.log("tools.available", { count: keys.length, keys });
+              console.log(
+                "tools.has.github_create_issue_comment",
+                !!tools["github_create_issue_comment"],
+              );
+            } catch {}
+            return tools as any;
+          })(),
+        });
+      } catch (err) {
+        console.error("streamText error", err);
+        throw err;
+      }
     },
 
     async onRequest(request) {
@@ -142,6 +318,256 @@ blink
         path: url.pathname,
         method: request.method,
       });
+
+      // Handle GitHub webhooks at /github
+      if (url.pathname.startsWith("/github")) {
+        if (!GITHUB_WEBHOOK_SECRET)
+          return new Response("Unauthorized", { status: 401 });
+        const webhooks = new Webhooks({ secret: GITHUB_WEBHOOK_SECRET });
+        const [id, event, signature] = [
+          request.headers.get("x-github-delivery"),
+          request.headers.get("x-github-event"),
+          request.headers.get("x-hub-signature-256"),
+        ];
+        if (!signature || !id || !event) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+
+        try {
+          console.log("github.headers", { id, event, hasSig: !!signature });
+        } catch {}
+        // Catch-all name logging
+        // @ts-ignore onAny exists in @octokit/webhooks
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        webhooks.onAny((ev: any) => {
+          try {
+            console.log("github.onAny", { name: ev.name });
+          } catch {}
+        });
+
+        webhooks.on("issue_comment", async (e) => {
+          try {
+            if (
+              GITHUB_BOT_LOGIN &&
+              e.payload.sender?.login === GITHUB_BOT_LOGIN
+            )
+              return;
+            const owner = e.payload.repository.owner.login;
+            const repo = e.payload.repository.name;
+            const number = e.payload.issue.number;
+            const isPr = !!e.payload.issue?.pull_request;
+            const chat = await blink.chat.upsert(
+              isPr
+                ? `gh-pr~${owner}~${repo}~${number}`
+                : `gh-issue~${owner}~${repo}~${number}`,
+            );
+            try {
+              await blink.storage.kv.set(
+                `gh-meta-${chat.id}`,
+                JSON.stringify({
+                  kind: isPr ? "pr" : "issue",
+                  owner,
+                  repo,
+                  number,
+                }),
+              );
+            } catch {}
+            const text = e.payload.comment?.body || "";
+            const msg = [
+              `GitHub event: issue_comment by ${e.payload.sender?.login}`,
+              "",
+              "Comment:",
+              text,
+              "",
+              `TARGET: ${owner}/${repo} #${number}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            console.log("gh.enqueue", {
+              evt: "issue_comment",
+              owner,
+              repo,
+              pr: number,
+              by: e.payload.sender?.login,
+            });
+            await blink.chat.message(
+              chat.id,
+              { role: "user", parts: [{ type: "text", text: msg }] },
+              { behavior: "interrupt" },
+            );
+            console.log("gh.enqueued", { chatId: chat.id });
+          } catch (err) {
+            console.error("issue_comment handler error", err);
+          }
+        });
+
+        webhooks.on("pull_request_review_comment", async (e) => {
+          try {
+            if (
+              GITHUB_BOT_LOGIN &&
+              e.payload.sender?.login === GITHUB_BOT_LOGIN
+            )
+              return;
+            const owner = e.payload.repository.owner.login;
+            const repo = e.payload.repository.name;
+            const number = e.payload.pull_request.number;
+            const chat = await blink.chat.upsert(
+              `gh-pr~${owner}~${repo}~${number}`,
+            );
+            try {
+              await blink.storage.kv.set(
+                `gh-meta-${chat.id}`,
+                JSON.stringify({ kind: "pr", owner, repo, number }),
+              );
+            } catch {}
+            const text = e.payload.comment?.body || "";
+            const msg = [
+              `GitHub event: pull_request_review_comment by ${e.payload.sender?.login}`,
+              "",
+              "Comment:",
+              text,
+              "",
+              `TARGET: ${owner}/${repo} #${number}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            console.log("gh.enqueue", {
+              evt: "pull_request_review_comment",
+              owner,
+              repo,
+              pr: number,
+              by: e.payload.sender?.login,
+            });
+            await blink.chat.message(
+              chat.id,
+              { role: "user", parts: [{ type: "text", text: msg }] },
+              { behavior: "interrupt" },
+            );
+            console.log("gh.enqueued", { chatId: chat.id });
+          } catch (err) {
+            console.error("pull_request_review_comment handler error", err);
+          }
+        });
+
+        webhooks.on("pull_request_review", async (e) => {
+          try {
+            if (
+              GITHUB_BOT_LOGIN &&
+              e.payload.sender?.login === GITHUB_BOT_LOGIN
+            )
+              return;
+            const owner = e.payload.repository.owner.login;
+            const repo = e.payload.repository.name;
+            const number = e.payload.pull_request.number;
+            const chat = await blink.chat.upsert(
+              `gh-pr~${owner}~${repo}~${number}`,
+            );
+            try {
+              await blink.storage.kv.set(
+                `gh-meta-${chat.id}`,
+                JSON.stringify({ kind: "pr", owner, repo, number }),
+              );
+            } catch {}
+            const state = e.payload.review?.state || "";
+            const body = e.payload.review?.body || "";
+            const msg = [
+              `GitHub event: pull_request_review (${state}) by ${e.payload.sender?.login}`,
+              "",
+              body ? "Review body:" : "",
+              body,
+              "",
+              `TARGET: ${owner}/${repo} #${number}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            console.log("gh.enqueue", {
+              evt: "pull_request_review",
+              owner,
+              repo,
+              pr: number,
+              state,
+              by: e.payload.sender?.login,
+            });
+            await blink.chat.message(
+              chat.id,
+              { role: "user", parts: [{ type: "text", text: msg }] },
+              { behavior: "interrupt" },
+            );
+            console.log("gh.enqueued", { chatId: chat.id });
+          } catch (err) {
+            console.error("pull_request_review handler error", err);
+          }
+        });
+
+        webhooks.on("check_run.completed", async (e) => {
+          try {
+            const concl = e.payload.check_run?.conclusion;
+            if (concl === "success" || concl === "skipped") return;
+            const prs = e.payload.check_run?.pull_requests || [];
+            for (const pr of prs) {
+              if (e.payload.check_run.head_sha !== pr.head?.sha) continue; // stale check run
+              const owner = e.payload.repository.owner.login;
+              const repo = e.payload.repository.name;
+              const number = pr.number;
+              const chat = await blink.chat.upsert(
+                `gh-pr~${owner}~${repo}~${number}`,
+              );
+              try {
+                await blink.storage.kv.set(
+                  `gh-meta-${chat.id}`,
+                  JSON.stringify({ kind: "pr", owner, repo, number }),
+                );
+              } catch {}
+              const details = [
+                `Check: ${e.payload.check_run.name}`,
+                `Conclusion: ${concl}`,
+                e.payload.check_run.details_url
+                  ? `Details: ${e.payload.check_run.details_url}`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join("\n");
+              const msg = [
+                "GitHub event: check_run.completed (non-success)",
+                "",
+                details,
+                "",
+                `TARGET: ${owner}/${repo} #${number}`,
+              ]
+                .filter(Boolean)
+                .join("\n");
+              console.log("gh.enqueue", {
+                evt: "check_run.completed",
+                owner,
+                repo,
+                pr: number,
+                conclusion: concl,
+              });
+              await blink.chat.message(
+                chat.id,
+                { role: "user", parts: [{ type: "text", text: msg }] },
+                { behavior: "interrupt" },
+              );
+              console.log("gh.enqueued", { chatId: chat.id });
+            }
+          } catch (err) {
+            console.error("check_run.completed handler error", err);
+          }
+        });
+
+        return webhooks
+          .verifyAndReceive({
+            id,
+            name: event as any,
+            payload: await request.text(),
+            signature,
+          })
+          .then(() => new Response("OK", { status: 200 }))
+          .catch(() => new Response("Error", { status: 500 }));
+      }
+
+      // Handle Jira automation webhooks at /jira (existing behavior)
       if (!url.pathname.startsWith("/jira")) {
         log("request_ignored", { reqId, reason: "path_mismatch" });
         return new Response("OK", { status: 200 });
@@ -194,7 +620,7 @@ blink
       if (!adfBody && commentId) {
         try {
           const fetched = await getJson<any>(
-            `/rest/api/3/issue/${issueKey}/comment/${commentId}`
+            `/rest/api/3/issue/${issueKey}/comment/${commentId}`,
           );
           adfBody = fetched?.body;
         } catch (e) {
@@ -220,14 +646,14 @@ blink
       const userText = adfText(adfBody).trim();
       const base = (getJiraSiteBase() || "https://example.invalid").replace(
         /\/$/,
-        ""
+        "",
       );
       const issueUrl = `${base}/browse/${issueKey}`;
 
       const chat = await blink.chat.upsert(`jira-${issueKey}`);
       await blink.storage.kv.set(
         `jira-meta-${chat.id}`,
-        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null })
+        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
       );
 
       const composed = [
@@ -240,7 +666,7 @@ blink
       await blink.chat.message(
         chat.id,
         { role: "user", parts: [{ type: "text", text: composed }] },
-        { behavior: "interrupt" }
+        { behavior: "interrupt" },
       );
 
       log("chat_enqueued", { reqId, chatId: chat.id, issueKey });
