@@ -294,6 +294,64 @@ blink
                 }),
                 "github_",
               ),
+              // Enforce draft PRs: override SDK tool with a wrapper that forces draft: true
+              github_create_pull_request: tool({
+                description: (github as any).tools.create_pull_request
+                  .description,
+                inputSchema: (github as any).tools.create_pull_request
+                  .inputSchema,
+                execute: async (args: any, { abortSignal }: any) => {
+                  const octokit = await getOctokit();
+                  const response = await octokit.request(
+                    "POST /repos/{owner}/{repo}/pulls",
+                    {
+                      owner: args.owner,
+                      repo: args.repo,
+                      base: args.base,
+                      head: args.head,
+                      title: args.title,
+                      body: args.body ?? "",
+                      draft: true,
+                      request: { signal: abortSignal },
+                    },
+                  );
+                  return {
+                    pull_request: {
+                      number: response.data.number,
+                      comments: response.data.comments,
+                      title: response.data.title ?? "",
+                      body: response.data.body ?? "",
+                      state: response.data.state as "open" | "closed",
+                      created_at: response.data.created_at,
+                      updated_at: response.data.updated_at,
+                      user: { login: response.data.user?.login ?? "" },
+                      head: {
+                        ref: response.data.head.ref,
+                        sha: response.data.head.sha,
+                      },
+                      base: {
+                        ref: response.data.base.ref,
+                        sha: response.data.base.sha,
+                      },
+                      merged_at: response.data.merged_at ?? undefined,
+                      merge_commit_sha:
+                        response.data.merge_commit_sha ?? undefined,
+                      merged_by: response.data.merged_by
+                        ? {
+                            login: response.data.merged_by.login,
+                            avatar_url:
+                              response.data.merged_by.avatar_url ?? "",
+                            html_url: response.data.merged_by.html_url ?? "",
+                          }
+                        : undefined,
+                      review_comments: response.data.review_comments,
+                      additions: response.data.additions,
+                      deletions: response.data.deletions,
+                      changed_files: response.data.changed_files,
+                    },
+                  };
+                },
+              }),
             };
             if (!meta?.issueUrl && tools["jira_reply"]) {
               delete tools["jira_reply"];
@@ -398,8 +456,6 @@ blink
             const owner = e.payload.repository.owner.login;
             const repo = e.payload.repository.name;
             const number = e.payload.pull_request.number;
-            const body = e.payload.comment?.body || "";
-            if (!/\bblink\b/i.test(body)) return; // only respond when mentioned
             const chat = await blink.chat.upsert(
               `gh-pr~${owner}~${repo}~${number}`,
             );
@@ -409,7 +465,7 @@ blink
                 JSON.stringify({ kind: "pr", owner, repo, number }),
               );
             } catch {}
-            const text = body;
+            const text = e.payload.comment?.body || "";
             const msg = [
               `GitHub event: pull_request_review_comment by ${e.payload.sender?.login}`,
               "",
@@ -448,8 +504,6 @@ blink
             const owner = e.payload.repository.owner.login;
             const repo = e.payload.repository.name;
             const number = e.payload.pull_request.number;
-            const body = e.payload.review?.body || "";
-            if (!/\bblink\b/i.test(body)) return; // only respond when mentioned
             const chat = await blink.chat.upsert(
               `gh-pr~${owner}~${repo}~${number}`,
             );
@@ -460,6 +514,7 @@ blink
               );
             } catch {}
             const state = e.payload.review?.state || "";
+            const body = e.payload.review?.body || "";
             const msg = [
               `GitHub event: pull_request_review (${state}) by ${e.payload.sender?.login}`,
               "",
