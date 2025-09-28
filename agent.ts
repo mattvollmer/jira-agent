@@ -164,20 +164,30 @@ blink
       // Fallback: parse TARGET line from most recent user message
       if (!ghMeta) {
         try {
-          const lastUser = [...messages]
-            .reverse()
-            .find((m: any) => m.role === "user");
-          const text =
-            typeof lastUser?.content === "string"
-              ? lastUser.content
-              : (lastUser?.content?.find?.((p: any) => p.text)?.text ?? "");
+          const msgs = (messages as any[]).slice().reverse();
+          const lastUser = msgs.find((m) => m?.role === "user") || {};
+          let text = "";
+          // ai SDK UIMessage shape uses parts
+          if (Array.isArray(lastUser.parts)) {
+            const t = lastUser.parts.find((p: any) => p?.type === "text");
+            text = t?.text ?? "";
+          }
+          // Some runtimes provide content as string/array
+          if (!text && typeof lastUser.content === "string")
+            text = lastUser.content;
+          if (!text && Array.isArray(lastUser.content)) {
+            const t = lastUser.content.find(
+              (p: any) => typeof p?.text === "string",
+            );
+            text = t?.text ?? "";
+          }
           const m = text.match(
             /TARGET:\s*([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\s*#(\d+)/i,
           );
-          if (m) {
-            const owner = m[1];
-            const repo = m[2];
-            const number = Number(m[3]);
+          if (m && m[1] && m[2] && m[3]) {
+            const owner = m[1] as string;
+            const repo = m[2] as string;
+            const number = Number(m[3] as string);
             // Infer kind from the event line if present
             const evLine = (
               text.match(/GitHub event:\s*([^\n]+)/i)?.[1] ?? ""
@@ -186,17 +196,12 @@ blink
               ? "pr"
               : "issue";
             ghMeta = { kind, owner, repo, number };
-            console.log("sendMessages.fallbackGhMeta", ghMeta);
           }
         } catch {}
       }
 
       try {
-        console.log("sendMessages", {
-          chatId: chat?.id,
-          ghMeta,
-          msgCount: messages.length,
-        });
+        console.log("sendMessages", { chatId: chat?.id, kind: ghMeta?.kind });
       } catch {}
 
       try {
@@ -221,7 +226,7 @@ blink
                 ? `- GitHub Issue: ${ghMeta.owner}/${ghMeta.repo} #${ghMeta.number}`
                 : undefined,
             ghMeta?.kind
-              ? "- Always post a brief summary using github_create_issue_comment (set issue_number accordingly)."
+              ? "- When useful, post a brief summary using github_create_issue_comment (set issue_number accordingly). Avoid trivial or duplicate comments."
               : undefined,
           ]
             .filter(Boolean)
@@ -293,14 +298,6 @@ blink
             if (!meta?.issueUrl && tools["jira_reply"]) {
               delete tools["jira_reply"];
             }
-            try {
-              const keys = Object.keys(tools).sort();
-              console.log("tools.available", { count: keys.length, keys });
-              console.log(
-                "tools.has.github_create_issue_comment",
-                !!tools["github_create_issue_comment"],
-              );
-            } catch {}
             return tools as any;
           })(),
         });
@@ -332,19 +329,6 @@ blink
         if (!signature || !id || !event) {
           return new Response("Unauthorized", { status: 401 });
         }
-
-        try {
-          console.log("github.headers", { id, event, hasSig: !!signature });
-        } catch {}
-        // Catch-all name logging
-        // @ts-ignore onAny exists in @octokit/webhooks
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-        // @ts-ignore
-        webhooks.onAny((ev: any) => {
-          try {
-            console.log("github.onAny", { name: ev.name });
-          } catch {}
-        });
 
         webhooks.on("issue_comment", async (e) => {
           try {
