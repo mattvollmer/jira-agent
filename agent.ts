@@ -184,10 +184,10 @@ blink
           const m = text.match(
             /TARGET:\s*([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\s*#(\d+)/i,
           );
-          if (m) {
-            const owner = m[1];
-            const repo = m[2];
-            const number = Number(m[3]);
+          if (m && m[1] && m[2] && m[3]) {
+            const owner = m[1] as string;
+            const repo = m[2] as string;
+            const number = Number(m[3] as string);
             // Infer kind from the event line if present
             const evLine = (
               text.match(/GitHub event:\s*([^\n]+)/i)?.[1] ?? ""
