@@ -29,7 +29,7 @@ function getGithubAppContext() {
     !GITHUB_APP_INSTALLATION_ID
   ) {
     throw new Error(
-      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set",
+      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set"
     );
   }
   return {
@@ -46,7 +46,7 @@ async function getOctokit(): Promise<Octokit> {
     !GITHUB_APP_INSTALLATION_ID
   ) {
     throw new Error(
-      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set",
+      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set"
     );
   }
   const auth = createAppAuth({
@@ -61,7 +61,7 @@ async function getOctokit(): Promise<Octokit> {
 async function postPRComment(
   octokit: Octokit,
   repo: { owner: string; repo: string; number: number },
-  body: string,
+  body: string
 ) {
   await octokit.request(
     "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
@@ -70,7 +70,7 @@ async function postPRComment(
       repo: repo.repo,
       issue_number: repo.number,
       body,
-    },
+    }
   );
 }
 
@@ -90,7 +90,7 @@ function rid() {
 function log(event: string, data?: Record<string, unknown>) {
   try {
     console.log(
-      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data }),
+      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data })
     );
   } catch {}
 }
@@ -104,7 +104,7 @@ async function getServiceAccountId(): Promise<string> {
 }
 
 function parseGhPrChatId(
-  id?: string | null,
+  id?: string | null
 ): { owner: string; repo: string; prNumber: number } | null {
   if (!id) return null;
   if (!id.startsWith("gh-pr~")) return null;
@@ -213,8 +213,7 @@ blink
               issueUrl: meta?.issueUrl ?? null,
               authorId: meta?.authorId ?? null,
             }),
-            // --- GitHub tools (curated) ---
-            ...blink.tools.with(
+            ...blink.tools.withContext(
               {
                 github_get_repository: github.tools.get_repository,
                 github_repository_read_file: github.tools.repository_read_file,
@@ -232,7 +231,7 @@ blink
                 github_get_commit_diff: github.tools.get_commit_diff,
                 github_search_code: github.tools.search_code,
               },
-              { appAuth: async () => getGithubAppContext() },
+              { appAuth: async () => getGithubAppContext() }
             ),
             github_post_pr_comment: tool({
               description:
@@ -257,7 +256,7 @@ blink
                     repo: args.repo,
                     number: args.pull_number,
                   },
-                  args.body,
+                  args.body
                 );
                 return { ok: true };
               },
@@ -306,7 +305,7 @@ blink
             const repo = e.payload.repository.name;
             const number = e.payload.issue.number;
             const chat = await blink.chat.upsert(
-              `gh-pr~${owner}~${repo}~${number}`,
+              `gh-pr~${owner}~${repo}~${number}`
             );
             const text = e.payload.comment?.body || "";
             const msg = [
@@ -322,7 +321,7 @@ blink
             await blink.chat.message(
               chat.id,
               { role: "user", parts: [{ type: "text", text: msg }] },
-              { behavior: "interrupt" },
+              { behavior: "interrupt" }
             );
           } catch (err) {
             console.error("issue_comment handler error", err);
@@ -340,7 +339,7 @@ blink
             const repo = e.payload.repository.name;
             const number = e.payload.pull_request.number;
             const chat = await blink.chat.upsert(
-              `gh-pr~${owner}~${repo}~${number}`,
+              `gh-pr~${owner}~${repo}~${number}`
             );
             const text = e.payload.comment?.body || "";
             const msg = [
@@ -356,7 +355,7 @@ blink
             await blink.chat.message(
               chat.id,
               { role: "user", parts: [{ type: "text", text: msg }] },
-              { behavior: "interrupt" },
+              { behavior: "interrupt" }
             );
           } catch (err) {
             console.error("pull_request_review_comment handler error", err);
@@ -374,7 +373,7 @@ blink
               const repo = e.payload.repository.name;
               const number = pr.number;
               const chat = await blink.chat.upsert(
-                `gh-pr~${owner}~${repo}~${number}`,
+                `gh-pr~${owner}~${repo}~${number}`
               );
               const details = [
                 `Check: ${e.payload.check_run.name}`,
@@ -397,7 +396,7 @@ blink
               await blink.chat.message(
                 chat.id,
                 { role: "user", parts: [{ type: "text", text: msg }] },
-                { behavior: "interrupt" },
+                { behavior: "interrupt" }
               );
             }
           } catch (err) {
@@ -469,7 +468,7 @@ blink
       if (!adfBody && commentId) {
         try {
           const fetched = await getJson<any>(
-            `/rest/api/3/issue/${issueKey}/comment/${commentId}`,
+            `/rest/api/3/issue/${issueKey}/comment/${commentId}`
           );
           adfBody = fetched?.body;
         } catch (e) {
@@ -495,14 +494,14 @@ blink
       const userText = adfText(adfBody).trim();
       const base = (getJiraSiteBase() || "https://example.invalid").replace(
         /\/$/,
-        "",
+        ""
       );
       const issueUrl = `${base}/browse/${issueKey}`;
 
       const chat = await blink.chat.upsert(`jira-${issueKey}`);
       await blink.storage.kv.set(
         `jira-meta-${chat.id}`,
-        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
+        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null })
       );
 
       const composed = [
@@ -515,7 +514,7 @@ blink
       await blink.chat.message(
         chat.id,
         { role: "user", parts: [{ type: "text", text: composed }] },
-        { behavior: "interrupt" },
+        { behavior: "interrupt" }
       );
 
       log("chat_enqueued", { reqId, chatId: chat.id, issueKey });
