@@ -213,25 +213,12 @@ blink
               issueUrl: meta?.issueUrl ?? null,
               authorId: meta?.authorId ?? null,
             }),
-            ...blink.tools.withContext(
-              {
-                github_get_repository: github.tools.get_repository,
-                github_repository_read_file: github.tools.repository_read_file,
-                github_repository_list_directory:
-                  github.tools.repository_list_directory,
-                github_repository_grep_file: github.tools.repository_grep_file,
-                github_search_repositories: github.tools.search_repositories,
-                github_search_issues: github.tools.search_issues,
-                github_get_pull_request: github.tools.get_pull_request,
-                github_list_pull_request_files:
-                  github.tools.list_pull_request_files,
-                github_get_issue: github.tools.get_issue,
-                github_list_commits: github.tools.list_commits,
-                github_get_commit: github.tools.get_commit,
-                github_get_commit_diff: github.tools.get_commit_diff,
-                github_search_code: github.tools.search_code,
-              },
-              { appAuth: async () => getGithubAppContext() }
+            // --- GitHub tools (all, prefixed) ---
+            ...blink.tools.prefix(
+              blink.tools.with(github.tools, {
+                appAuth: async () => getGithubAppContext(),
+              }),
+              "github_",
             ),
             github_post_pr_comment: tool({
               description:
