@@ -264,6 +264,19 @@ blink
           return new Response("Unauthorized", { status: 401 });
         }
 
+        try {
+          console.log("github.headers", { id, event, hasSig: !!signature });
+        } catch {}
+        // Catch-all name logging
+        // @ts-ignore onAny exists in @octokit/webhooks
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        webhooks.onAny((ev: any) => {
+          try {
+            console.log("github.onAny", { name: ev.name });
+          } catch {}
+        });
+
         webhooks.on("issue_comment", async (e) => {
           try {
             if (
@@ -346,6 +359,50 @@ blink
             console.log("gh.enqueued", { chatId: chat.id });
           } catch (err) {
             console.error("pull_request_review_comment handler error", err);
+          }
+        });
+
+        webhooks.on("pull_request_review", async (e) => {
+          try {
+            if (
+              GITHUB_BOT_LOGIN &&
+              e.payload.sender?.login === GITHUB_BOT_LOGIN
+            )
+              return;
+            const owner = e.payload.repository.owner.login;
+            const repo = e.payload.repository.name;
+            const number = e.payload.pull_request.number;
+            const chat = await blink.chat.upsert(
+              `gh-pr~${owner}~${repo}~${number}`,
+            );
+            const state = e.payload.review?.state || "";
+            const body = e.payload.review?.body || "";
+            const msg = [
+              `GitHub event: pull_request_review (${state}) by ${e.payload.sender?.login}`,
+              "",
+              body ? "Review body:" : "",
+              body,
+              "",
+              `TARGET: ${owner}/${repo} #${number}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            console.log("gh.enqueue", {
+              evt: "pull_request_review",
+              owner,
+              repo,
+              pr: number,
+              state,
+              by: e.payload.sender?.login,
+            });
+            await blink.chat.message(
+              chat.id,
+              { role: "user", parts: [{ type: "text", text: msg }] },
+              { behavior: "interrupt" },
+            );
+            console.log("gh.enqueued", { chatId: chat.id });
+          } catch (err) {
+            console.error("pull_request_review handler error", err);
           }
         });
 
