@@ -341,6 +341,8 @@ blink
             const repo = e.payload.repository.name;
             const number = e.payload.issue.number;
             const isPr = !!e.payload.issue?.pull_request;
+            const body = e.payload.comment?.body || "";
+            if (!/\bblink\b/i.test(body)) return; // only respond when mentioned
             const chat = await blink.chat.upsert(
               isPr
                 ? `gh-pr~${owner}~${repo}~${number}`
@@ -357,7 +359,7 @@ blink
                 }),
               );
             } catch {}
-            const text = e.payload.comment?.body || "";
+            const text = body;
             const msg = [
               `GitHub event: issue_comment by ${e.payload.sender?.login}`,
               "",
@@ -396,6 +398,8 @@ blink
             const owner = e.payload.repository.owner.login;
             const repo = e.payload.repository.name;
             const number = e.payload.pull_request.number;
+            const body = e.payload.comment?.body || "";
+            if (!/\bblink\b/i.test(body)) return; // only respond when mentioned
             const chat = await blink.chat.upsert(
               `gh-pr~${owner}~${repo}~${number}`,
             );
@@ -405,7 +409,7 @@ blink
                 JSON.stringify({ kind: "pr", owner, repo, number }),
               );
             } catch {}
-            const text = e.payload.comment?.body || "";
+            const text = body;
             const msg = [
               `GitHub event: pull_request_review_comment by ${e.payload.sender?.login}`,
               "",
@@ -444,6 +448,8 @@ blink
             const owner = e.payload.repository.owner.login;
             const repo = e.payload.repository.name;
             const number = e.payload.pull_request.number;
+            const body = e.payload.review?.body || "";
+            if (!/\bblink\b/i.test(body)) return; // only respond when mentioned
             const chat = await blink.chat.upsert(
               `gh-pr~${owner}~${repo}~${number}`,
             );
@@ -454,7 +460,6 @@ blink
               );
             } catch {}
             const state = e.payload.review?.state || "";
-            const body = e.payload.review?.body || "";
             const msg = [
               `GitHub event: pull_request_review (${state}) by ${e.payload.sender?.login}`,
               "",
