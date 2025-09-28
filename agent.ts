@@ -10,6 +10,64 @@ import {
   getJson,
 } from "./jira";
 import type { JiraMyself } from "./jira";
+import * as github from "@blink-sdk/github";
+import { Webhooks } from "@octokit/webhooks";
+import { Octokit } from "@octokit/core";
+
+const GITHUB_APP_ID = process.env.GITHUB_APP_ID?.trim();
+const GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY?.trim();
+const GITHUB_APP_INSTALLATION_ID =
+  process.env.GITHUB_APP_INSTALLATION_ID?.trim();
+const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET?.trim();
+const GITHUB_BOT_LOGIN = process.env.GITHUB_BOT_LOGIN?.trim();
+
+function getGithubAppContext(): github.AppAuthOptions {
+  if (
+    !GITHUB_APP_ID ||
+    !GITHUB_APP_PRIVATE_KEY ||
+    !GITHUB_APP_INSTALLATION_ID
+  ) {
+    throw new Error(
+      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set",
+    );
+  }
+  return {
+    appId: GITHUB_APP_ID,
+    privateKey: Buffer.from(GITHUB_APP_PRIVATE_KEY, "base64").toString("utf-8"),
+    installationId: Number(GITHUB_APP_INSTALLATION_ID),
+  };
+}
+
+async function getOctokit(): Promise<Octokit> {
+  const token = await github.authenticateApp(getGithubAppContext());
+  return new Octokit({ auth: token });
+}
+
+async function postPRComment(
+  octokit: Octokit,
+  repo: { owner: string; repo: string; number: number },
+  body: string,
+) {
+  await octokit.request(
+    "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    {
+      owner: repo.owner,
+      repo: repo.repo,
+      issue_number: repo.number,
+      body,
+    },
+  );
+}
+
+async function summarizeForPR(text: string): Promise<string> {
+  const { text: out } = await streamText({
+    model: "anthropic/claude-sonnet-4",
+    system:
+      "Summarize briefly for a PR discussion. No headers or emojis. Keep it concise.",
+    messages: [{ role: "user", content: text.slice(0, 6000) }],
+  });
+  return out.trim();
+}
 
 const JIRA_AUTOMATION_SECRET = process.env.JIRA_AUTOMATION_SECRET?.trim();
 const JIRA_SERVICE_ACCOUNT_ID = process.env.JIRA_SERVICE_ACCOUNT_ID?.trim();
@@ -27,7 +85,7 @@ function rid() {
 function log(event: string, data?: Record<string, unknown>) {
   try {
     console.log(
-      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data })
+      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data }),
     );
   } catch {}
 }
@@ -125,6 +183,32 @@ blink
               issueUrl: meta?.issueUrl ?? null,
               authorId: meta?.authorId ?? null,
             }),
+            // --- GitHub tools (curated) ---
+            ...blink.tools.prefix(
+              blink.tools.with(
+                {
+                  github_get_repository: github.tools.get_repository,
+                  github_repository_read_file:
+                    github.tools.repository_read_file,
+                  github_repository_list_directory:
+                    github.tools.repository_list_directory,
+                  github_repository_grep_file:
+                    github.tools.repository_grep_file,
+                  github_search_repositories: github.tools.search_repositories,
+                  github_search_issues: github.tools.search_issues,
+                  github_get_pull_request: github.tools.get_pull_request,
+                  github_list_pull_request_files:
+                    github.tools.list_pull_request_files,
+                  github_get_issue: github.tools.get_issue,
+                  github_list_commits: github.tools.list_commits,
+                  github_get_commit: github.tools.get_commit,
+                  github_get_commit_diff: github.tools.get_commit_diff,
+                  github_search_code: github.tools.search_code,
+                },
+                { appAuth: async () => getGithubAppContext() },
+              ),
+              "github_",
+            ),
           };
           if (!meta?.issueUrl && tools["jira_reply"]) {
             delete tools["jira_reply"];
@@ -142,6 +226,110 @@ blink
         path: url.pathname,
         method: request.method,
       });
+
+      // Handle GitHub webhooks at /github
+      if (url.pathname.startsWith("/github")) {
+        if (!GITHUB_WEBHOOK_SECRET)
+          return new Response("Unauthorized", { status: 401 });
+        const webhooks = new Webhooks({ secret: GITHUB_WEBHOOK_SECRET });
+        const [id, event, signature] = [
+          request.headers.get("x-github-delivery"),
+          request.headers.get("x-github-event"),
+          request.headers.get("x-hub-signature-256"),
+        ];
+        if (!signature || !id || !event) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+
+        webhooks.on("issue_comment", async (e) => {
+          try {
+            if (
+              GITHUB_BOT_LOGIN &&
+              e.payload.sender?.login === GITHUB_BOT_LOGIN
+            )
+              return;
+            if (!e.payload.issue?.pull_request) return; // only PR issues
+            const octokit = await getOctokit();
+            const repo = {
+              owner: e.payload.repository.owner.login,
+              repo: e.payload.repository.name,
+              number: e.payload.issue.number,
+            };
+            const text = e.payload.comment?.body || "";
+            if (!text.trim()) return;
+            const body = await summarizeForPR(text);
+            if (body) await postPRComment(octokit, repo, body);
+          } catch (err) {
+            console.error("issue_comment handler error", err);
+          }
+        });
+
+        webhooks.on("pull_request_review_comment", async (e) => {
+          try {
+            if (
+              GITHUB_BOT_LOGIN &&
+              e.payload.sender?.login === GITHUB_BOT_LOGIN
+            )
+              return;
+            const octokit = await getOctokit();
+            const repo = {
+              owner: e.payload.repository.owner.login,
+              repo: e.payload.repository.name,
+              number: e.payload.pull_request.number,
+            };
+            const text = e.payload.comment?.body || "";
+            if (!text.trim()) return;
+            const body = await summarizeForPR(text);
+            if (body) await postPRComment(octokit, repo, body);
+          } catch (err) {
+            console.error("pull_request_review_comment handler error", err);
+          }
+        });
+
+        webhooks.on("check_run.completed", async (e) => {
+          try {
+            const concl = e.payload.check_run?.conclusion;
+            if (concl === "success" || concl === "skipped") return;
+            const prs = e.payload.check_run?.pull_requests || [];
+            const octokit = await getOctokit();
+            for (const pr of prs) {
+              if (e.payload.check_run.head_sha !== pr.head?.sha) continue; // stale check run
+              const repo = {
+                owner: e.payload.repository.owner.login,
+                repo: e.payload.repository.name,
+                number: pr.number,
+              };
+              const details = [
+                `Check: ${e.payload.check_run.name}`,
+                `Conclusion: ${concl}`,
+                e.payload.check_run.details_url
+                  ? `Details: ${e.payload.check_run.details_url}`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join("\n");
+              const body = await summarizeForPR(
+                `CI failure summary:\n${details}`,
+              );
+              if (body) await postPRComment(octokit, repo, body);
+            }
+          } catch (err) {
+            console.error("check_run.completed handler error", err);
+          }
+        });
+
+        return webhooks
+          .verifyAndReceive({
+            id,
+            name: event,
+            payload: await request.text(),
+            signature,
+          })
+          .then(() => new Response("OK", { status: 200 }))
+          .catch(() => new Response("Error", { status: 500 }));
+      }
+
+      // Handle Jira automation webhooks at /jira (existing behavior)
       if (!url.pathname.startsWith("/jira")) {
         log("request_ignored", { reqId, reason: "path_mismatch" });
         return new Response("OK", { status: 200 });
@@ -194,7 +382,7 @@ blink
       if (!adfBody && commentId) {
         try {
           const fetched = await getJson<any>(
-            `/rest/api/3/issue/${issueKey}/comment/${commentId}`
+            `/rest/api/3/issue/${issueKey}/comment/${commentId}`,
           );
           adfBody = fetched?.body;
         } catch (e) {
@@ -220,14 +408,14 @@ blink
       const userText = adfText(adfBody).trim();
       const base = (getJiraSiteBase() || "https://example.invalid").replace(
         /\/$/,
-        ""
+        "",
       );
       const issueUrl = `${base}/browse/${issueKey}`;
 
       const chat = await blink.chat.upsert(`jira-${issueKey}`);
       await blink.storage.kv.set(
         `jira-meta-${chat.id}`,
-        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null })
+        JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
       );
 
       const composed = [
@@ -240,7 +428,7 @@ blink
       await blink.chat.message(
         chat.id,
         { role: "user", parts: [{ type: "text", text: composed }] },
-        { behavior: "interrupt" }
+        { behavior: "interrupt" },
       );
 
       log("chat_enqueued", { reqId, chatId: chat.id, issueKey });

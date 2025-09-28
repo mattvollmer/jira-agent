@@ -8,6 +8,12 @@
     "ai": "^5.0.56",
     "blink": "^0.1.61",
     "esbuild": "^0.25.10",
-    "zod": "^4.1.11"
+    "zod": "^4.1.11",
+    "@blink-sdk/github": "^0.0.10",
+    "@octokit/webhooks": "^12.0.11",
+    "@octokit/core": "^5.2.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2"
   }
 }
