@@ -256,6 +256,14 @@ blink
             if (!meta?.issueUrl && tools["jira_reply"]) {
               delete tools["jira_reply"];
             }
+            try {
+              const keys = Object.keys(tools).sort();
+              console.log("tools.available", { count: keys.length, keys });
+              console.log(
+                "tools.has.github_create_issue_comment",
+                !!tools["github_create_issue_comment"],
+              );
+            } catch {}
             return tools as any;
           })(),
         });
