@@ -74,7 +74,7 @@ blink
           const tools: Record<string, any> = {
             get_current_date: tool({
               description:
-                "Get the current EST date/time with weekday and human-formatted output",
+                "Get the current UTC date/time with weekday and human-formatted output",
               inputSchema: z.object({}),
               execute: async () => {
                 const now = new Date();
