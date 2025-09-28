@@ -13,6 +13,7 @@ import type { JiraMyself } from "./jira";
 import * as github from "@blink-sdk/github";
 import { Webhooks } from "@octokit/webhooks";
 import { Octokit } from "@octokit/core";
+import { createAppAuth } from "@octokit/auth-app";
 
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID?.trim();
 const GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY?.trim();
@@ -21,7 +22,7 @@ const GITHUB_APP_INSTALLATION_ID =
 const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET?.trim();
 const GITHUB_BOT_LOGIN = process.env.GITHUB_BOT_LOGIN?.trim();
 
-function getGithubAppContext(): github.AppAuthOptions {
+function getGithubAppContext() {
   if (
     !GITHUB_APP_ID ||
     !GITHUB_APP_PRIVATE_KEY ||
@@ -35,11 +36,25 @@ function getGithubAppContext(): github.AppAuthOptions {
     appId: GITHUB_APP_ID,
     privateKey: Buffer.from(GITHUB_APP_PRIVATE_KEY, "base64").toString("utf-8"),
     installationId: Number(GITHUB_APP_INSTALLATION_ID),
-  };
+  } as const;
 }
 
 async function getOctokit(): Promise<Octokit> {
-  const token = await github.authenticateApp(getGithubAppContext());
+  if (
+    !GITHUB_APP_ID ||
+    !GITHUB_APP_PRIVATE_KEY ||
+    !GITHUB_APP_INSTALLATION_ID
+  ) {
+    throw new Error(
+      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set",
+    );
+  }
+  const auth = createAppAuth({
+    appId: Number(GITHUB_APP_ID),
+    privateKey: Buffer.from(GITHUB_APP_PRIVATE_KEY, "base64").toString("utf-8"),
+    installationId: Number(GITHUB_APP_INSTALLATION_ID),
+  });
+  const { token } = await auth({ type: "installation" });
   return new Octokit({ auth: token });
 }
 
