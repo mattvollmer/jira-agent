@@ -59,16 +59,6 @@ async function postPRComment(
   );
 }
 
-async function summarizeForPR(text: string): Promise<string> {
-  const { text: out } = await streamText({
-    model: "anthropic/claude-sonnet-4",
-    system:
-      "Summarize briefly for a PR discussion. No headers or emojis. Keep it concise.",
-    messages: [{ role: "user", content: text.slice(0, 6000) }],
-  });
-  return out.trim();
-}
-
 const JIRA_AUTOMATION_SECRET = process.env.JIRA_AUTOMATION_SECRET?.trim();
 const JIRA_SERVICE_ACCOUNT_ID = process.env.JIRA_SERVICE_ACCOUNT_ID?.trim();
 let cachedServiceAccountId: string | undefined;
@@ -98,6 +88,21 @@ async function getServiceAccountId(): Promise<string> {
   return cachedServiceAccountId;
 }
 
+function parseGhPrChatId(
+  id?: string | null,
+): { owner: string; repo: string; prNumber: number } | null {
+  if (!id) return null;
+  if (!id.startsWith("gh-pr~")) return null;
+  const parts = id.split("~");
+  if (parts.length !== 4) return null;
+  const owner = parts[1] ?? "";
+  const repo = parts[2] ?? "";
+  const prNumber = Number(parts[3]);
+  if (!owner || !repo || !Number.isFinite(prNumber) || prNumber <= 0)
+    return null;
+  return { owner, repo, prNumber };
+}
+
 blink
   .agent({
     async sendMessages({ messages, chat }) {
@@ -113,17 +118,27 @@ blink
         if (raw) meta = JSON.parse(raw);
       } catch {}
 
+      const gh = parseGhPrChatId(chat?.id);
+
       return streamText({
         model: "anthropic/claude-sonnet-4",
         system: [
-          "You are a Jira assistant responding in issue comments.",
+          gh
+            ? "You are a GitHub assistant responding in pull request discussions."
+            : "You are a Jira assistant responding in issue comments.",
           "- Be concise, direct, and helpful.",
           "- No emojis or headers.",
           "- If unclear, ask one brief clarifying question.",
           meta?.issueUrl ? `- Issue URL: ${meta.issueUrl}` : undefined,
           meta?.issueUrl
             ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
-            : "- Do not call jira_reply in this chat. Provide your answer directly or use jira_add_comment only when an explicit issue_url is provided.",
+            : undefined,
+          gh
+            ? `- GitHub PR: ${gh.owner}/${gh.repo} #${gh.prNumber}`
+            : undefined,
+          gh
+            ? "- Always deliver your final answer by calling the github_post_pr_comment tool exactly once with your final text."
+            : undefined,
         ]
           .filter(Boolean)
           .join("\n"),
@@ -209,6 +224,34 @@ blink
               ),
               "github_",
             ),
+            github_post_pr_comment: tool({
+              description:
+                "Post a comment to a GitHub pull request. Use this ONCE to deliver your final answer.",
+              inputSchema: z.object({
+                owner: z.string(),
+                repo: z.string(),
+                pull_number: z.number().int().positive(),
+                body: z.string().min(1),
+              }),
+              execute: async (args: {
+                owner: string;
+                repo: string;
+                pull_number: number;
+                body: string;
+              }) => {
+                const octokit = await getOctokit();
+                await postPRComment(
+                  octokit,
+                  {
+                    owner: args.owner,
+                    repo: args.repo,
+                    number: args.pull_number,
+                  },
+                  args.body,
+                );
+                return { ok: true };
+              },
+            }),
           };
           if (!meta?.issueUrl && tools["jira_reply"]) {
             delete tools["jira_reply"];
@@ -249,16 +292,28 @@ blink
             )
               return;
             if (!e.payload.issue?.pull_request) return; // only PR issues
-            const octokit = await getOctokit();
-            const repo = {
-              owner: e.payload.repository.owner.login,
-              repo: e.payload.repository.name,
-              number: e.payload.issue.number,
-            };
+            const owner = e.payload.repository.owner.login;
+            const repo = e.payload.repository.name;
+            const number = e.payload.issue.number;
+            const chat = await blink.chat.upsert(
+              `gh-pr~${owner}~${repo}~${number}`,
+            );
             const text = e.payload.comment?.body || "";
-            if (!text.trim()) return;
-            const body = await summarizeForPR(text);
-            if (body) await postPRComment(octokit, repo, body);
+            const msg = [
+              `GitHub event: issue_comment by ${e.payload.sender?.login}`,
+              "",
+              "Comment:",
+              text,
+              "",
+              `TARGET: ${owner}/${repo} #${number}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            await blink.chat.message(
+              chat.id,
+              { role: "user", parts: [{ type: "text", text: msg }] },
+              { behavior: "interrupt" },
+            );
           } catch (err) {
             console.error("issue_comment handler error", err);
           }
@@ -271,16 +326,28 @@ blink
               e.payload.sender?.login === GITHUB_BOT_LOGIN
             )
               return;
-            const octokit = await getOctokit();
-            const repo = {
-              owner: e.payload.repository.owner.login,
-              repo: e.payload.repository.name,
-              number: e.payload.pull_request.number,
-            };
+            const owner = e.payload.repository.owner.login;
+            const repo = e.payload.repository.name;
+            const number = e.payload.pull_request.number;
+            const chat = await blink.chat.upsert(
+              `gh-pr~${owner}~${repo}~${number}`,
+            );
             const text = e.payload.comment?.body || "";
-            if (!text.trim()) return;
-            const body = await summarizeForPR(text);
-            if (body) await postPRComment(octokit, repo, body);
+            const msg = [
+              `GitHub event: pull_request_review_comment by ${e.payload.sender?.login}`,
+              "",
+              "Comment:",
+              text,
+              "",
+              `TARGET: ${owner}/${repo} #${number}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+            await blink.chat.message(
+              chat.id,
+              { role: "user", parts: [{ type: "text", text: msg }] },
+              { behavior: "interrupt" },
+            );
           } catch (err) {
             console.error("pull_request_review_comment handler error", err);
           }
@@ -291,14 +358,14 @@ blink
             const concl = e.payload.check_run?.conclusion;
             if (concl === "success" || concl === "skipped") return;
             const prs = e.payload.check_run?.pull_requests || [];
-            const octokit = await getOctokit();
             for (const pr of prs) {
               if (e.payload.check_run.head_sha !== pr.head?.sha) continue; // stale check run
-              const repo = {
-                owner: e.payload.repository.owner.login,
-                repo: e.payload.repository.name,
-                number: pr.number,
-              };
+              const owner = e.payload.repository.owner.login;
+              const repo = e.payload.repository.name;
+              const number = pr.number;
+              const chat = await blink.chat.upsert(
+                `gh-pr~${owner}~${repo}~${number}`,
+              );
               const details = [
                 `Check: ${e.payload.check_run.name}`,
                 `Conclusion: ${concl}`,
@@ -308,10 +375,20 @@ blink
               ]
                 .filter(Boolean)
                 .join("\n");
-              const body = await summarizeForPR(
-                `CI failure summary:\n${details}`,
+              const msg = [
+                "GitHub event: check_run.completed (non-success)",
+                "",
+                details,
+                "",
+                `TARGET: ${owner}/${repo} #${number}`,
+              ]
+                .filter(Boolean)
+                .join("\n");
+              await blink.chat.message(
+                chat.id,
+                { role: "user", parts: [{ type: "text", text: msg }] },
+                { behavior: "interrupt" },
               );
-              if (body) await postPRComment(octokit, repo, body);
             }
           } catch (err) {
             console.error("check_run.completed handler error", err);
