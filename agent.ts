@@ -258,6 +258,32 @@ async function assertAgentPRBranch(
   return pr.data.head.ref;
 }
 
+function validateGitCommand(command: string): void {
+  // Validate git push operations
+  const gitPushRegex = /git\s+push\s+\w+\s+([^\s]+)/;
+  const pushMatch = command.match(gitPushRegex);
+  if (pushMatch) {
+    const branchName = pushMatch[1];
+    if (!isAgentBranch(branchName)) {
+      throw new Error(
+        `Git push blocked: branch '${branchName}' must start with '${AGENT_BRANCH_PREFIX}'.`
+      );
+    }
+  }
+
+  // Validate git checkout -b (new branch creation)
+  const gitCheckoutRegex = /git\s+checkout\s+(-b\s+)?([^\s]+)/;
+  const checkoutMatch = command.match(gitCheckoutRegex);
+  if (checkoutMatch && checkoutMatch[1]) { // -b flag present
+    const branchName = checkoutMatch[2];
+    if (!isAgentBranch(branchName)) {
+      throw new Error(
+        `Git checkout -b blocked: branch '${branchName}' must start with '${AGENT_BRANCH_PREFIX}'.`
+      );
+    }
+  }
+}
+
 blink
   .agent({
     async sendMessages({ messages, chat }) {
@@ -711,9 +737,28 @@ blink
                 },
               }),
             };
+            // Create validated compute tools with branch name validation
+            const validatedComputeTools = {
+              ...(compute.tools as any),
+              execute_bash: {
+                ...(compute.tools as any).execute_bash,
+                execute: async (args: any, context: any) => {
+                  validateGitCommand(args.command);
+                  return (compute.tools as any).execute_bash.execute(args, context);
+                },
+              },
+              execute_bash_sync: {
+                ...(compute.tools as any).execute_bash_sync,
+                execute: async (args: any, context: any) => {
+                  validateGitCommand(args.command);
+                  return (compute.tools as any).execute_bash_sync.execute(args, context);
+                },
+              },
+            };
+
             Object.assign(
               tools,
-              blink.tools.withContext(compute.tools as any, {
+              blink.tools.withContext(validatedComputeTools, {
                 client: async () => {
                   const ws = await getDaytonaWorkspace(chat.id);
                   if (!ws)
