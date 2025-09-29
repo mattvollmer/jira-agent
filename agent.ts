@@ -24,7 +24,10 @@ const GITHUB_APP_INSTALLATION_ID =
   process.env.GITHUB_APP_INSTALLATION_ID?.trim();
 const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET?.trim();
 const GITHUB_BOT_LOGIN = process.env.GITHUB_BOT_LOGIN?.trim();
-const AGENT_BRANCH_PREFIX = process.env.AGENT_BRANCH_PREFIX?.trim() || "blink/";
+const DAYTONA_API_KEY = process.env.DAYTONA_API_KEY?.trim();
+const DAYTONA_SNAPSHOT =
+  process.env.DAYTONA_SNAPSHOT?.trim() || "blink-workspace-august-17-2025";
+const DAYTONA_TTL_MINUTES = Number(process.env.DAYTONA_TTL_MINUTES ?? "60");
 
 function getGithubAppContext() {
   if (
@@ -230,60 +233,6 @@ async function setDaytonaWorkspace(chatID: string, ws: DaytonaWorkspace) {
   await blink.storage.kv.set(`daytona-workspace-${chatID}`, JSON.stringify(ws));
 }
 
-const DAYTONA_API_KEY = process.env.DAYTONA_API_KEY?.trim();
-const DAYTONA_SNAPSHOT =
-  process.env.DAYTONA_SNAPSHOT?.trim() || "blink-workspace-august-17-2025";
-const DAYTONA_TTL_MINUTES = Number(process.env.DAYTONA_TTL_MINUTES ?? "60");
-
-function isAgentBranch(ref?: string | null): boolean {
-  if (!ref) return false;
-  return ref.startsWith(AGENT_BRANCH_PREFIX);
-}
-
-async function assertAgentPRBranch(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  pull_number: number,
-): Promise<string> {
-  const pr = await octokit.request(
-    "GET /repos/{owner}/{repo}/pulls/{pull_number}",
-    { owner, repo, pull_number },
-  );
-  if (!isAgentBranch(pr.data.head.ref)) {
-    throw new Error(
-      `Operation blocked: head '${pr.data.head.ref}' does not start with '${AGENT_BRANCH_PREFIX}'.`,
-    );
-  }
-  return pr.data.head.ref;
-}
-
-function validateGitCommand(command: string): void {
-  // Validate git push operations
-  const gitPushRegex = /git\s+push\s+\w+\s+([^\s]+)/;
-  const pushMatch = command.match(gitPushRegex);
-  if (pushMatch) {
-    const branchName = pushMatch[1];
-    if (!isAgentBranch(branchName)) {
-      throw new Error(
-        `Git push blocked: branch '${branchName}' must start with '${AGENT_BRANCH_PREFIX}'.`
-      );
-    }
-  }
-
-  // Validate git checkout -b (new branch creation)
-  const gitCheckoutRegex = /git\s+checkout\s+(-b\s+)?([^\s]+)/;
-  const checkoutMatch = command.match(gitCheckoutRegex);
-  if (checkoutMatch && checkoutMatch[1]) { // -b flag present
-    const branchName = checkoutMatch[2];
-    if (!isAgentBranch(branchName)) {
-      throw new Error(
-        `Git checkout -b blocked: branch '${branchName}' must start with '${AGENT_BRANCH_PREFIX}'.`
-      );
-    }
-  }
-}
-
 blink
   .agent({
     async sendMessages({ messages, chat }) {
@@ -454,6 +403,7 @@ blink
                 : "You are a Jira assistant responding in issue comments.",
             "- Be concise, direct, and helpful.",
             "- No emojis or headers.",
+            "- IMPORTANT: Always prefix new branches with 'blink/' (e.g., 'blink/fix-bug', 'blink/add-feature'). Only modify or work with branches that begin with 'blink/'.",
             ghMeta?.kind
               ? "- If unclear, ask one brief clarifying question."
               : "- If unclear, ask one brief clarifying question via jira_reply.",
@@ -548,11 +498,6 @@ blink
                 inputSchema: (github as any).tools.create_pull_request
                   .inputSchema,
                 execute: async (args: any, { abortSignal }: any) => {
-                  if (!isAgentBranch(args.head)) {
-                    throw new Error(
-                      `Branch '${args.head}' must start with '${AGENT_BRANCH_PREFIX}'.`,
-                    );
-                  }
                   const octokit = await getOctokit();
                   const response = await octokit.request(
                     "POST /repos/{owner}/{repo}/pulls",
@@ -679,12 +624,6 @@ blink
                   .inputSchema,
                 execute: async (args: any, { abortSignal }: any) => {
                   const octokit = await getOctokit();
-                  await assertAgentPRBranch(
-                    octokit,
-                    args.owner,
-                    args.repo,
-                    args.pull_number,
-                  );
                   const response = await octokit.request(
                     "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
                     {
@@ -743,15 +682,19 @@ blink
               execute_bash: {
                 ...(compute.tools as any).execute_bash,
                 execute: async (args: any, context: any) => {
-                  validateGitCommand(args.command);
-                  return (compute.tools as any).execute_bash.execute(args, context);
+                  return (compute.tools as any).execute_bash.execute(
+                    args,
+                    context,
+                  );
                 },
               },
               execute_bash_sync: {
                 ...(compute.tools as any).execute_bash_sync,
                 execute: async (args: any, context: any) => {
-                  validateGitCommand(args.command);
-                  return (compute.tools as any).execute_bash_sync.execute(args, context);
+                  return (compute.tools as any).execute_bash_sync.execute(
+                    args,
+                    context,
+                  );
                 },
               },
             };
@@ -1015,7 +958,6 @@ blink
                 );
                 headRef = get.data.head.ref;
               } catch {}
-              if (!isAgentBranch(headRef)) continue;
               const chat = await blink.chat.upsert(
                 `gh-pr~${owner}~${repo}~${number}`,
               );
