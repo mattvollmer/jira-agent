@@ -593,7 +593,7 @@ export function createJiraTools(
         ];
         const jql = jqlAnd(parts);
         const search = await getJson<any>(`/rest/api/3/search`, {
-          jql,
+          jql: `${jql} ORDER BY updated DESC`,
           startAt: String(start_at),
           maxResults: String(limit),
           fields: [
@@ -604,7 +604,6 @@ export function createJiraTools(
             "assignee",
             "updated",
           ].join(","),
-          orderBy: "-updated",
         });
         const issues = search.issues ?? [];
         return issues.map((it: any) => ({
