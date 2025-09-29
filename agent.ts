@@ -14,6 +14,8 @@ import * as github from "@blink-sdk/github";
 import { Webhooks } from "@octokit/webhooks";
 import { Octokit } from "@octokit/core";
 import { createAppAuth } from "@octokit/auth-app";
+import * as compute from "@blink-sdk/compute";
+import { Daytona } from "@daytonaio/sdk";
 
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID?.trim();
 const GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY?.trim();
@@ -132,6 +134,27 @@ function parseGhIssueChatId(
     return null;
   return { owner, repo, issueNumber };
 }
+
+export interface DaytonaWorkspace {
+  readonly id: string;
+  readonly connectID: string;
+}
+
+async function getDaytonaWorkspace(chatID: string) {
+  try {
+    const raw = await blink.storage.kv.get(`daytona-workspace-${chatID}`);
+    return raw ? (JSON.parse(raw) as DaytonaWorkspace) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+async function setDaytonaWorkspace(chatID: string, ws: DaytonaWorkspace) {
+  await blink.storage.kv.set(`daytona-workspace-${chatID}`, JSON.stringify(ws));
+}
+
+const DAYTONA_API_KEY = process.env.DAYTONA_API_KEY?.trim();
+const DAYTONA_SNAPSHOT = process.env.DAYTONA_SNAPSHOT?.trim();
+const DAYTONA_TTL_MINUTES = Number(process.env.DAYTONA_TTL_MINUTES ?? "60");
 
 blink
   .agent({
@@ -379,7 +402,67 @@ blink
                   };
                 },
               }),
+              initialize_workspace: tool({
+                description: "Initialize a Daytona workspace for this chat.",
+                inputSchema: z.object({}),
+                execute: async () => {
+                  const existing = await getDaytonaWorkspace(chat.id);
+                  if (existing) return "Workspace already initialized.";
+                  if (!DAYTONA_API_KEY)
+                    throw new Error("DAYTONA_API_KEY must be set");
+                  if (!DAYTONA_SNAPSHOT)
+                    throw new Error("DAYTONA_SNAPSHOT must be set");
+                  const daytona = new Daytona({ apiKey: DAYTONA_API_KEY });
+                  const token = await compute.experimental_remote.token();
+                  const created = await daytona.create({
+                    snapshot: DAYTONA_SNAPSHOT,
+                    autoDeleteInterval: DAYTONA_TTL_MINUTES,
+                    envVars: { BLINK_TOKEN: token.token },
+                  });
+                  await setDaytonaWorkspace(chat.id, {
+                    id: created.id,
+                    connectID: token.id,
+                  });
+                  return "Workspace initialized.";
+                },
+              }),
+              workspace_authenticate_git: tool({
+                description:
+                  "Authenticate with Git repositories for push/pull operations from the Daytona workspace.",
+                inputSchema: z.object({
+                  owner: z.string(),
+                  repos: z.array(z.string()),
+                }),
+                execute: async (args: any) => {
+                  const ws = await getDaytonaWorkspace(chat.id);
+                  if (!ws) throw new Error("Workspace not initialized.");
+                  const client = await compute.experimental_remote.connect(
+                    ws.connectID,
+                  );
+                  const token = await github.authenticateApp({
+                    ...getGithubAppContext(),
+                    repositoryNames: args.repos,
+                  });
+                  await client.request("set_env", {
+                    env: { GITHUB_TOKEN: token },
+                  });
+                  return { ok: true };
+                },
+              }),
             };
+            Object.assign(
+              tools,
+              blink.tools.withContext(compute.tools as any, {
+                client: async () => {
+                  const ws = await getDaytonaWorkspace(chat.id);
+                  if (!ws)
+                    throw new Error(
+                      "You must call 'initialize_workspace' first.",
+                    );
+                  return compute.experimental_remote.connect(ws.connectID);
+                },
+              }),
+            );
             if (!meta?.issueUrl && tools["jira_reply"]) {
               delete tools["jira_reply"];
             }
