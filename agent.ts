@@ -200,6 +200,27 @@ blink
         } catch {}
       }
 
+      // Determine if the user explicitly mentioned the bot name ('blink') in the latest message
+      let ghMentioned = false;
+      try {
+        const msgs = (messages as any[]).slice().reverse();
+        const lastUser = msgs.find((m) => m?.role === "user") || {};
+        let text = "";
+        if (Array.isArray(lastUser.parts)) {
+          const t = lastUser.parts.find((p: any) => p?.type === "text");
+          text = t?.text ?? "";
+        }
+        if (!text && typeof lastUser.content === "string")
+          text = lastUser.content;
+        if (!text && Array.isArray(lastUser.content)) {
+          const t = lastUser.content.find(
+            (p: any) => typeof p?.text === "string",
+          );
+          text = t?.text ?? "";
+        }
+        ghMentioned = /\bblink\b/i.test(text);
+      } catch {}
+
       try {
         console.log("sendMessages", { chatId: chat?.id, kind: ghMeta?.kind });
       } catch {}
@@ -225,9 +246,11 @@ blink
               : ghMeta?.kind === "issue"
                 ? `- GitHub Issue: ${ghMeta.owner}/${ghMeta.repo} #${ghMeta.number}`
                 : undefined,
-            ghMeta?.kind
-              ? "- When useful, post a brief summary using github_create_issue_comment (set issue_number accordingly). Avoid trivial or duplicate comments."
-              : undefined,
+            ghMeta?.kind && ghMentioned
+              ? "- Always post a brief summary as a comment using github_create_issue_comment (set issue_number accordingly). Keep it concise."
+              : ghMeta?.kind
+                ? "- When useful, post a brief summary using github_create_issue_comment (set issue_number accordingly). Avoid trivial or duplicate comments."
+                : undefined,
           ]
             .filter(Boolean)
             .join("\n"),
