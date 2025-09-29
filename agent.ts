@@ -1133,7 +1133,6 @@ agent.on("request", async (request, context) => {
     throw error;
   }
 
-  return new Response("OK", { status: 200 });
 });
 
 agent.serve();
