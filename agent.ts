@@ -96,6 +96,14 @@ function log(event: string, data?: Record<string, unknown>) {
   } catch {}
 }
 
+function chatLog(event: string, data?: Record<string, unknown>) {
+  try {
+    console.log(
+      JSON.stringify({ level: "info", source: "jira-chat", event, ...data }),
+    );
+  } catch {}
+}
+
 async function getServiceAccountId(): Promise<string> {
   if (JIRA_SERVICE_ACCOUNT_ID) return JIRA_SERVICE_ACCOUNT_ID;
   if (cachedServiceAccountId) return cachedServiceAccountId;
@@ -246,9 +254,9 @@ blink
       } catch {}
 
       try {
-        console.log("sendMessages", { chatId: chat?.id, kind: ghMeta?.kind });
+        chatLog("sendMessages", { chatId: chat?.id, kind: ghMeta?.kind });
         if (!ghMeta && meta?.issueUrl) {
-          console.log("jira.meta_loaded", {
+          chatLog("jira.meta_loaded", {
             chatId: chat?.id,
             issueUrl: meta.issueUrl,
             hasAuthorId: !!meta.authorId,
@@ -487,9 +495,12 @@ blink
             }
             try {
               if (!ghMeta && meta?.issueUrl) {
-                console.log("jira.tools", {
+                chatLog("jira.tools", {
                   has_jira_reply: !!(tools as any)["jira_reply"],
                   has_jira_add_comment: !!(tools as any)["jira_add_comment"],
+                  jira_tool_keys: Object.keys(tools).filter((k) =>
+                    k.startsWith("jira_"),
+                  ),
                 });
               }
             } catch {}
