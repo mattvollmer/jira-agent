@@ -21,6 +21,7 @@ const GITHUB_APP_INSTALLATION_ID =
   process.env.GITHUB_APP_INSTALLATION_ID?.trim();
 const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET?.trim();
 const GITHUB_BOT_LOGIN = process.env.GITHUB_BOT_LOGIN?.trim();
+const AGENT_BRANCH_PREFIX = process.env.AGENT_BRANCH_PREFIX?.trim() || "blink/";
 
 function getGithubAppContext() {
   if (
@@ -131,6 +132,29 @@ function parseGhIssueChatId(
   if (!owner || !repo || !Number.isFinite(issueNumber) || issueNumber <= 0)
     return null;
   return { owner, repo, issueNumber };
+}
+
+function isAgentBranch(ref?: string | null): boolean {
+  if (!ref) return false;
+  return ref.startsWith(AGENT_BRANCH_PREFIX);
+}
+
+async function assertAgentPRBranch(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  pull_number: number,
+): Promise<string> {
+  const pr = await octokit.request(
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+    { owner, repo, pull_number },
+  );
+  if (!isAgentBranch(pr.data.head.ref)) {
+    throw new Error(
+      `Operation blocked: head '${pr.data.head.ref}' does not start with '${AGENT_BRANCH_PREFIX}'.`,
+    );
+  }
+  return pr.data.head.ref;
 }
 
 blink
@@ -321,13 +345,18 @@ blink
                 }),
                 "github_",
               ),
-              // Enforce draft PRs: override SDK tool with a wrapper that forces draft: true
+              // Enforce draft PRs and branch prefix on PR creation/update
               github_create_pull_request: tool({
                 description: (github as any).tools.create_pull_request
                   .description,
                 inputSchema: (github as any).tools.create_pull_request
                   .inputSchema,
                 execute: async (args: any, { abortSignal }: any) => {
+                  if (!isAgentBranch(args.head)) {
+                    throw new Error(
+                      `Branch '${args.head}' must start with '${AGENT_BRANCH_PREFIX}'.`,
+                    );
+                  }
                   const octokit = await getOctokit();
                   const response = await octokit.request(
                     "POST /repos/{owner}/{repo}/pulls",
@@ -379,10 +408,82 @@ blink
                   };
                 },
               }),
+              github_update_pull_request: tool({
+                description: (github as any).tools.update_pull_request
+                  .description,
+                inputSchema: (github as any).tools.update_pull_request
+                  .inputSchema,
+                execute: async (args: any, { abortSignal }: any) => {
+                  const octokit = await getOctokit();
+                  await assertAgentPRBranch(
+                    octokit,
+                    args.owner,
+                    args.repo,
+                    args.pull_number,
+                  );
+                  const response = await octokit.request(
+                    "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+                    {
+                      owner: args.owner,
+                      repo: args.repo,
+                      pull_number: args.pull_number,
+                      title: args.title,
+                      body: args.body,
+                      state: args.state,
+                      base: args.base_branch,
+                      request: { signal: abortSignal },
+                    },
+                  );
+                  return {
+                    pull_request: {
+                      number: response.data.number,
+                      comments: response.data.comments,
+                      title: response.data.title ?? "",
+                      body: response.data.body ?? "",
+                      state: response.data.state as "open" | "closed",
+                      created_at: response.data.created_at,
+                      updated_at: response.data.updated_at,
+                      user: { login: response.data.user?.login ?? "" },
+                      head: {
+                        ref: response.data.head.ref,
+                        sha: response.data.head.sha,
+                      },
+                      base: {
+                        ref: response.data.base.ref,
+                        sha: response.data.base.sha,
+                      },
+                      additions: response.data.additions,
+                      deletions: response.data.deletions,
+                      changed_files: response.data.changed_files,
+                      review_comments: response.data.review_comments,
+                      closed_at: response.data.closed_at ?? undefined,
+                      merged_at: response.data.merged_at ?? undefined,
+                      merge_commit_sha:
+                        response.data.merge_commit_sha ?? undefined,
+                      merged_by: response.data.merged_by
+                        ? {
+                            login: response.data.merged_by.login,
+                            avatar_url:
+                              response.data.merged_by.avatar_url ?? "",
+                            html_url: response.data.merged_by.html_url ?? "",
+                          }
+                        : undefined,
+                    },
+                  };
+                },
+              }),
             };
             if (!meta?.issueUrl && tools["jira_reply"]) {
               delete tools["jira_reply"];
             }
+            try {
+              const keys = Object.keys(tools).sort();
+              console.log("tools.available", { count: keys.length, keys });
+              console.log(
+                "tools.has.github_create_issue_comment",
+                !!tools["github_create_issue_comment"],
+              );
+            } catch {}
             return tools as any;
           })(),
         });
@@ -581,6 +682,17 @@ blink
               const owner = e.payload.repository.owner.login;
               const repo = e.payload.repository.name;
               const number = pr.number;
+              // Only act on agent-owned branches
+              const octokit = await getOctokit();
+              let headRef: string | undefined;
+              try {
+                const get = await octokit.request(
+                  "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+                  { owner, repo, pull_number: number },
+                );
+                headRef = get.data.head.ref;
+              } catch {}
+              if (!isAgentBranch(headRef)) continue;
               const chat = await blink.chat.upsert(
                 `gh-pr~${owner}~${repo}~${number}`,
               );
