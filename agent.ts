@@ -1079,13 +1079,14 @@ agent.on("request", async (request, context) => {
   const issueUrl = `${base}/browse/${issueKey}`;
 
   const chatID = `jira-${issueKey}`;
+  const chat = await context.chat.ensure(chatID);
   await context.store.set(
-    `jira-meta-${chatID}`,
+    `jira-meta-${chat.id}`,
     JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
   );
   log("jira.meta_set", {
     reqId,
-    chatId: chatID,
+    chatId: chat.id,
     issueKey,
     hasAuthorId: !!authorId,
   });
@@ -1104,12 +1105,12 @@ agent.on("request", async (request, context) => {
     .filter(Boolean)
     .join("");
   await context.chat.message(
-    chatID,
+    chat.id,
     { role: "user", parts: [{ type: "text", text: composed }] },
     { behavior: "interrupt" },
   );
 
-  log("chat_enqueued", { reqId, chatId: chatID, issueKey });
+  log("chat_enqueued", { reqId, chatId: chat.id, issueKey });
   return new Response("OK", { status: 200 });
 });
 
