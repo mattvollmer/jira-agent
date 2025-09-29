@@ -200,6 +200,27 @@ blink
         } catch {}
       }
 
+      // Determine if the user explicitly mentioned the bot name ('blink') in the latest message
+      let ghMentioned = false;
+      try {
+        const msgs = (messages as any[]).slice().reverse();
+        const lastUser = msgs.find((m) => m?.role === "user") || {};
+        let text = "";
+        if (Array.isArray(lastUser.parts)) {
+          const t = lastUser.parts.find((p: any) => p?.type === "text");
+          text = t?.text ?? "";
+        }
+        if (!text && typeof lastUser.content === "string")
+          text = lastUser.content;
+        if (!text && Array.isArray(lastUser.content)) {
+          const t = lastUser.content.find(
+            (p: any) => typeof p?.text === "string",
+          );
+          text = t?.text ?? "";
+        }
+        ghMentioned = /\bblink\b/i.test(text);
+      } catch {}
+
       try {
         console.log("sendMessages", { chatId: chat?.id, kind: ghMeta?.kind });
       } catch {}
@@ -220,14 +241,20 @@ blink
             meta?.issueUrl
               ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
               : undefined,
+            // Jira-specific guidance: never @mention the service account. Mention only the requester (jira_reply handles this)
+            !ghMeta?.kind
+              ? "- Never @mention the service account. Mention only the requester (jira_reply already handles this)."
+              : undefined,
             ghMeta?.kind === "pr"
               ? `- GitHub PR: ${ghMeta.owner}/${ghMeta.repo} #${ghMeta.number}`
               : ghMeta?.kind === "issue"
                 ? `- GitHub Issue: ${ghMeta.owner}/${ghMeta.repo} #${ghMeta.number}`
                 : undefined,
-            ghMeta?.kind
-              ? "- When useful, post a brief summary using github_create_issue_comment (set issue_number accordingly). Avoid trivial or duplicate comments."
-              : undefined,
+            ghMeta?.kind && ghMentioned
+              ? "- Always post a brief summary as a comment using github_create_issue_comment (set issue_number accordingly). Keep it concise."
+              : ghMeta?.kind
+                ? "- When useful, post a brief summary using github_create_issue_comment (set issue_number accordingly). Avoid trivial or duplicate comments."
+                : undefined,
           ]
             .filter(Boolean)
             .join("\n"),
@@ -294,6 +321,64 @@ blink
                 }),
                 "github_",
               ),
+              // Enforce draft PRs: override SDK tool with a wrapper that forces draft: true
+              github_create_pull_request: tool({
+                description: (github as any).tools.create_pull_request
+                  .description,
+                inputSchema: (github as any).tools.create_pull_request
+                  .inputSchema,
+                execute: async (args: any, { abortSignal }: any) => {
+                  const octokit = await getOctokit();
+                  const response = await octokit.request(
+                    "POST /repos/{owner}/{repo}/pulls",
+                    {
+                      owner: args.owner,
+                      repo: args.repo,
+                      base: args.base,
+                      head: args.head,
+                      title: args.title,
+                      body: args.body ?? "",
+                      draft: true,
+                      request: { signal: abortSignal },
+                    },
+                  );
+                  return {
+                    pull_request: {
+                      number: response.data.number,
+                      comments: response.data.comments,
+                      title: response.data.title ?? "",
+                      body: response.data.body ?? "",
+                      state: response.data.state as "open" | "closed",
+                      created_at: response.data.created_at,
+                      updated_at: response.data.updated_at,
+                      user: { login: response.data.user?.login ?? "" },
+                      head: {
+                        ref: response.data.head.ref,
+                        sha: response.data.head.sha,
+                      },
+                      base: {
+                        ref: response.data.base.ref,
+                        sha: response.data.base.sha,
+                      },
+                      merged_at: response.data.merged_at ?? undefined,
+                      merge_commit_sha:
+                        response.data.merge_commit_sha ?? undefined,
+                      merged_by: response.data.merged_by
+                        ? {
+                            login: response.data.merged_by.login,
+                            avatar_url:
+                              response.data.merged_by.avatar_url ?? "",
+                            html_url: response.data.merged_by.html_url ?? "",
+                          }
+                        : undefined,
+                      review_comments: response.data.review_comments,
+                      additions: response.data.additions,
+                      deletions: response.data.deletions,
+                      changed_files: response.data.changed_files,
+                    },
+                  };
+                },
+              }),
             };
             if (!meta?.issueUrl && tools["jira_reply"]) {
               delete tools["jira_reply"];
@@ -341,6 +426,8 @@ blink
             const repo = e.payload.repository.name;
             const number = e.payload.issue.number;
             const isPr = !!e.payload.issue?.pull_request;
+            const body = e.payload.comment?.body || "";
+            if (!/\bblink\b/i.test(body)) return; // only respond when mentioned
             const chat = await blink.chat.upsert(
               isPr
                 ? `gh-pr~${owner}~${repo}~${number}`
@@ -357,7 +444,7 @@ blink
                 }),
               );
             } catch {}
-            const text = e.payload.comment?.body || "";
+            const text = body;
             const msg = [
               `GitHub event: issue_comment by ${e.payload.sender?.login}`,
               "",
@@ -592,6 +679,12 @@ blink
       const authorId: string | undefined =
         comment?.author?.accountId ?? comment?.authorId;
       const commentId: string | undefined = comment?.id ?? comment?.commentId;
+
+      // Prevent loops: ignore comments authored by the service account itself
+      if (authorId && authorId === serviceAccountId) {
+        log("no_action", { reqId, reason: "self_author" });
+        return new Response("OK", { status: 200 });
+      }
 
       let adfBody: any = comment.body;
       if (typeof adfBody === "string") {
