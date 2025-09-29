@@ -592,7 +592,7 @@ export function createJiraTools(
           jqlAssignee(assignee_accountId),
         ];
         const jql = jqlAnd(parts);
-        const search = await getJson<any>(`/rest/api/3/search`, {
+        const search = await getJson<any>(`/rest/api/3/search/jql`, {
           jql: `${jql} ORDER BY updated DESC`,
           startAt: String(start_at),
           maxResults: String(limit),
