@@ -15,6 +15,8 @@ import * as github from "@blink-sdk/github";
 import { Webhooks } from "@octokit/webhooks";
 import { Octokit } from "@octokit/core";
 import { createAppAuth } from "@octokit/auth-app";
+import * as compute from "@blink-sdk/compute";
+import { Daytona } from "@daytonaio/sdk";
 
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID?.trim();
 const GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY?.trim();
@@ -74,6 +76,74 @@ async function postPRComment(
       body,
     },
   );
+}
+
+function getAppOctokit(): Octokit {
+  if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY) {
+    throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be set");
+  }
+  const appId = Number(GITHUB_APP_ID);
+  const privateKey = Buffer.from(GITHUB_APP_PRIVATE_KEY!, "base64").toString(
+    "utf-8",
+  );
+  return new Octokit({
+    authStrategy: createAppAuth as any,
+    auth: {
+      appId,
+      privateKey,
+    } as any,
+  });
+}
+
+async function getInstallationOctokit(
+  owner: string,
+  repo: string,
+): Promise<Octokit> {
+  const appOctokit = getAppOctokit();
+
+  const installationId = (
+    await appOctokit.request("GET /repos/{owner}/{repo}/installation", {
+      owner,
+      repo,
+    })
+  ).data.id;
+
+  const appId = Number(GITHUB_APP_ID!);
+  const privateKey = Buffer.from(GITHUB_APP_PRIVATE_KEY!, "base64").toString(
+    "utf-8",
+  );
+  const installationOctokit = new Octokit({
+    authStrategy: createAppAuth,
+    auth: {
+      appId,
+      privateKey,
+      installationId,
+    },
+  });
+
+  return installationOctokit;
+}
+
+async function createInstallationToken(
+  owner: string,
+  repo: string,
+  repositories: string[],
+): Promise<string> {
+  const appOctokit = getAppOctokit();
+  const installationId = (
+    await appOctokit.request("GET /repos/{owner}/{repo}/installation", {
+      owner,
+      repo,
+    })
+  ).data.id;
+  const tokenResp = await appOctokit.request(
+    "POST /app/installations/{installation_id}/access_tokens",
+    {
+      installation_id: installationId,
+      repositories,
+    } as any,
+  );
+  return tokenResp.data.token as string;
 }
 
 const JIRA_AUTOMATION_SECRET = process.env.JIRA_AUTOMATION_SECRET?.trim();
@@ -142,6 +212,28 @@ function parseGhIssueChatId(
     return null;
   return { owner, repo, issueNumber };
 }
+
+export interface DaytonaWorkspace {
+  readonly id: string;
+  readonly connectID: string;
+}
+
+async function getDaytonaWorkspace(chatID: string) {
+  try {
+    const raw = await blink.storage.kv.get(`daytona-workspace-${chatID}`);
+    return raw ? (JSON.parse(raw) as DaytonaWorkspace) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+async function setDaytonaWorkspace(chatID: string, ws: DaytonaWorkspace) {
+  await blink.storage.kv.set(`daytona-workspace-${chatID}`, JSON.stringify(ws));
+}
+
+const DAYTONA_API_KEY = process.env.DAYTONA_API_KEY?.trim();
+const DAYTONA_SNAPSHOT =
+  process.env.DAYTONA_SNAPSHOT?.trim() || "blink-workspace-august-17-2025";
+const DAYTONA_TTL_MINUTES = Number(process.env.DAYTONA_TTL_MINUTES ?? "60");
 
 function isAgentBranch(ref?: string | null): boolean {
   if (!ref) return false;
@@ -486,6 +578,74 @@ blink
                   };
                 },
               }),
+              initialize_workspace: tool({
+                description: "Initialize a Daytona workspace for this chat.",
+                inputSchema: z.object({}),
+                execute: async () => {
+                  const existing = await getDaytonaWorkspace(chat.id);
+                  if (existing) return "Workspace already initialized.";
+                  if (!DAYTONA_API_KEY)
+                    throw new Error("DAYTONA_API_KEY must be set");
+                  const daytona = new Daytona({ apiKey: DAYTONA_API_KEY });
+                  const token = await compute.experimental_remote.token();
+                  const created = await daytona.create({
+                    snapshot: DAYTONA_SNAPSHOT,
+                    autoDeleteInterval: DAYTONA_TTL_MINUTES,
+                    envVars: { BLINK_TOKEN: token.token },
+                  });
+                  await setDaytonaWorkspace(chat.id, {
+                    id: created.id,
+                    connectID: token.id,
+                  });
+                  return "Workspace initialized.";
+                },
+              }),
+              workspace_authenticate_git: tool({
+                description:
+                  "Authenticate with Git repositories for push/pull operations from the Daytona workspace.",
+                inputSchema: z.object({
+                  owner: z.string(),
+                  repos: z.array(z.string()).min(1),
+                }),
+                execute: async (args: any) => {
+                  const ws = await getDaytonaWorkspace(chat.id);
+                  if (!ws) throw new Error("Workspace not initialized.");
+                  let client;
+                  try {
+                    client = await compute.experimental_remote.connect(
+                      ws.connectID,
+                    );
+                  } catch {
+                    if (!DAYTONA_API_KEY)
+                      throw new Error(
+                        "Workspace unavailable and DAYTONA_API_KEY not set to recreate.",
+                      );
+                    const daytona = new Daytona({ apiKey: DAYTONA_API_KEY });
+                    const token = await compute.experimental_remote.token();
+                    const created = await daytona.create({
+                      snapshot: DAYTONA_SNAPSHOT,
+                      autoDeleteInterval: DAYTONA_TTL_MINUTES,
+                      envVars: { BLINK_TOKEN: token.token },
+                    });
+                    await setDaytonaWorkspace(chat.id, {
+                      id: created.id,
+                      connectID: token.id,
+                    });
+                    client = await compute.experimental_remote.connect(
+                      token.id,
+                    );
+                  }
+                  const ghToken = await createInstallationToken(
+                    args.owner,
+                    args.repos[0],
+                    args.repos,
+                  );
+                  await client.request("set_env", {
+                    env: { GITHUB_TOKEN: ghToken },
+                  });
+                  return { ok: true };
+                },
+              }),
               github_update_pull_request: tool({
                 description: (github as any).tools.update_pull_request
                   .description,
@@ -551,6 +711,40 @@ blink
                 },
               }),
             };
+            Object.assign(
+              tools,
+              blink.tools.withContext(compute.tools as any, {
+                client: async () => {
+                  const ws = await getDaytonaWorkspace(chat.id);
+                  if (!ws)
+                    throw new Error(
+                      "You must call 'initialize_workspace' first.",
+                    );
+                  try {
+                    return await compute.experimental_remote.connect(
+                      ws.connectID,
+                    );
+                  } catch (e) {
+                    if (!DAYTONA_API_KEY)
+                      throw new Error(
+                        "Workspace unavailable and DAYTONA_API_KEY not set to recreate.",
+                      );
+                    const daytona = new Daytona({ apiKey: DAYTONA_API_KEY });
+                    const token = await compute.experimental_remote.token();
+                    const created = await daytona.create({
+                      snapshot: DAYTONA_SNAPSHOT,
+                      autoDeleteInterval: DAYTONA_TTL_MINUTES,
+                      envVars: { BLINK_TOKEN: token.token },
+                    });
+                    await setDaytonaWorkspace(chat.id, {
+                      id: created.id,
+                      connectID: token.id,
+                    });
+                    return await compute.experimental_remote.connect(token.id);
+                  }
+                },
+              }),
+            );
             if (!meta?.issueUrl && tools["jira_reply"]) {
               delete tools["jira_reply"];
             }
