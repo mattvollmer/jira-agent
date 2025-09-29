@@ -398,10 +398,7 @@ export function createJiraTools(
         if (!meta?.issueUrl)
           throw new Error("Missing issue metadata for delivery");
         const key = parseIssueKeyFromUrl(meta.issueUrl);
-        const body = buildAdfComment(
-          text,
-          meta.authorId ? [{ accountId: meta.authorId }] : undefined,
-        );
+        const body = buildAdfComment(text, undefined);
         const result = await postJson<any>(
           `/rest/api/3/issue/${key}/comment`,
           body,
