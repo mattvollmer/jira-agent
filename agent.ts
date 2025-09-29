@@ -76,6 +76,70 @@ async function postPRComment(
   );
 }
 
+function getAppOctokit(): Octokit {
+  if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY) {
+    throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be set");
+  }
+  return new Octokit({
+    authStrategy: createAppAuth as any,
+    auth: {
+      appId: Number(GITHUB_APP_ID),
+      privateKey: Buffer.from(GITHUB_APP_PRIVATE_KEY, "base64").toString(
+        "utf-8",
+      ),
+    } as any,
+  });
+}
+
+async function getInstallationOctokit(
+  owner: string,
+  repo: string,
+): Promise<Octokit> {
+  const appOctokit = getAppOctokit();
+
+  const installationId = (
+    await appOctokit.request("GET /repos/{owner}/{repo}/installation", {
+      owner,
+      repo,
+    })
+  ).data.id;
+
+  const installationOctokit = new Octokit({
+    authStrategy: createAppAuth,
+    auth: {
+      appId: Number(GITHUB_APP_ID),
+      privateKey: Buffer.from(GITHUB_APP_PRIVATE_KEY, "base64").toString(
+        "utf-8",
+      ),
+      installationId,
+    },
+  });
+
+  return installationOctokit;
+}
+
+async function createInstallationToken(
+  owner: string,
+  repo: string,
+  repositories: string[],
+): Promise<string> {
+  const appOctokit = getAppOctokit();
+  const installationId = (
+    await appOctokit.request("GET /repos/{owner}/{repo}/installation", {
+      owner,
+      repo,
+    })
+  ).data.id;
+  const tokenResp = await appOctokit.request(
+    "POST /app/installations/{installation_id}/access_tokens",
+    {
+      installation_id: installationId,
+      repositories,
+    } as any,
+  );
+  return tokenResp.data.token as string;
+}
+
 const JIRA_AUTOMATION_SECRET = process.env.JIRA_AUTOMATION_SECRET?.trim();
 const JIRA_SERVICE_ACCOUNT_ID = process.env.JIRA_SERVICE_ACCOUNT_ID?.trim();
 let cachedServiceAccountId: string | undefined;
@@ -460,12 +524,13 @@ blink
                       token.id,
                     );
                   }
-                  const token = await github.authenticateApp({
-                    ...getGithubAppContext(),
-                    repositoryNames: args.repos,
-                  });
+                  const ghToken = await createInstallationToken(
+                    args.owner,
+                    args.repos[0],
+                    args.repos,
+                  );
                   await client.request("set_env", {
-                    env: { GITHUB_TOKEN: token },
+                    env: { GITHUB_TOKEN: ghToken },
                   });
                   return { ok: true };
                 },
