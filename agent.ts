@@ -36,7 +36,7 @@ function getGithubAppContext() {
     !GITHUB_APP_INSTALLATION_ID
   ) {
     throw new Error(
-      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set",
+      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set"
     );
   }
   return {
@@ -53,7 +53,7 @@ async function getOctokit(): Promise<Octokit> {
     !GITHUB_APP_INSTALLATION_ID
   ) {
     throw new Error(
-      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set",
+      "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID must be set"
     );
   }
   const auth = createAppAuth({
@@ -68,7 +68,7 @@ async function getOctokit(): Promise<Octokit> {
 async function postPRComment(
   octokit: Octokit,
   repo: { owner: string; repo: string; number: number },
-  body: string,
+  body: string
 ) {
   await octokit.request(
     "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
@@ -77,7 +77,7 @@ async function postPRComment(
       repo: repo.repo,
       issue_number: repo.number,
       body,
-    },
+    }
   );
 }
 
@@ -87,7 +87,7 @@ function getAppOctokit(): Octokit {
   }
   const appId = Number(GITHUB_APP_ID);
   const privateKey = Buffer.from(GITHUB_APP_PRIVATE_KEY!, "base64").toString(
-    "utf-8",
+    "utf-8"
   );
   return new Octokit({
     authStrategy: createAppAuth as any,
@@ -100,7 +100,7 @@ function getAppOctokit(): Octokit {
 
 async function getInstallationOctokit(
   owner: string,
-  repo: string,
+  repo: string
 ): Promise<Octokit> {
   const appOctokit = getAppOctokit();
 
@@ -113,7 +113,7 @@ async function getInstallationOctokit(
 
   const appId = Number(GITHUB_APP_ID!);
   const privateKey = Buffer.from(GITHUB_APP_PRIVATE_KEY!, "base64").toString(
-    "utf-8",
+    "utf-8"
   );
   const installationOctokit = new Octokit({
     authStrategy: createAppAuth,
@@ -130,7 +130,7 @@ async function getInstallationOctokit(
 async function createInstallationToken(
   owner: string,
   repo: string,
-  repositories: string[],
+  repositories: string[]
 ): Promise<string> {
   const appOctokit = getAppOctokit();
   const installationId = (
@@ -144,7 +144,7 @@ async function createInstallationToken(
     {
       installation_id: installationId,
       repositories,
-    } as any,
+    } as any
   );
   return tokenResp.data.token as string;
 }
@@ -165,7 +165,7 @@ function rid() {
 function log(event: string, data?: Record<string, unknown>) {
   try {
     console.log(
-      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data }),
+      JSON.stringify({ level: "info", source: "jira-webhook", event, ...data })
     );
   } catch {}
 }
@@ -173,7 +173,7 @@ function log(event: string, data?: Record<string, unknown>) {
 function chatLog(event: string, data?: Record<string, unknown>) {
   try {
     console.log(
-      JSON.stringify({ level: "info", source: "jira-chat", event, ...data }),
+      JSON.stringify({ level: "info", source: "jira-chat", event, ...data })
     );
   } catch {}
 }
@@ -187,7 +187,7 @@ async function getServiceAccountId(): Promise<string> {
 }
 
 function parseGhPrChatId(
-  id?: string | null,
+  id?: string | null
 ): { owner: string; repo: string; prNumber: number } | null {
   if (!id) return null;
   if (!id.startsWith("gh-pr~")) return null;
@@ -202,7 +202,7 @@ function parseGhPrChatId(
 }
 
 function parseGhIssueChatId(
-  id?: string | null,
+  id?: string | null
 ): { owner: string; repo: string; issueNumber: number } | null {
   if (!id) return null;
   if (!id.startsWith("gh-issue~")) return null;
@@ -232,7 +232,7 @@ async function getDaytonaWorkspace(context: blink.Context, key: string) {
 async function setDaytonaWorkspace(
   context: blink.Context,
   key: string,
-  ws: DaytonaWorkspace,
+  ws: DaytonaWorkspace
 ) {
   await context.store.set(`daytona-workspace-${key}`, JSON.stringify(ws));
 }
@@ -264,7 +264,7 @@ agent.on("chat", async ({ messages, key, context }) => {
         text = lastUser.content;
       if (!text && Array.isArray(lastUser.content)) {
         const t = lastUser.content.find(
-          (p: any) => typeof p?.text === "string",
+          (p: any) => typeof p?.text === "string"
         );
         text = t?.text ?? "";
       }
@@ -333,12 +333,12 @@ agent.on("chat", async ({ messages, key, context }) => {
         text = lastUser.content;
       if (!text && Array.isArray(lastUser.content)) {
         const t = lastUser.content.find(
-          (p: any) => typeof p?.text === "string",
+          (p: any) => typeof p?.text === "string"
         );
         text = t?.text ?? "";
       }
       const m = text.match(
-        /TARGET:\s*([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\s*#(\d+)/i,
+        /TARGET:\s*([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\s*#(\d+)/i
       );
       if (m && m[1] && m[2] && m[3]) {
         const owner = m[1] as string;
@@ -482,7 +482,7 @@ agent.on("chat", async ({ messages, key, context }) => {
             blink.tools.withContext(github.tools, {
               appAuth: async () => getGithubAppContext(),
             }),
-            "github_",
+            "github_"
           ),
           // Enforce draft PRs and branch prefix on PR creation/update
           github_create_pull_request: tool({
@@ -501,7 +501,7 @@ agent.on("chat", async ({ messages, key, context }) => {
                   body: args.body ?? "",
                   draft: true,
                   request: { signal: abortSignal },
-                },
+                }
               );
               return {
                 pull_request: {
@@ -573,12 +573,12 @@ agent.on("chat", async ({ messages, key, context }) => {
               let client;
               try {
                 client = await compute.experimental_remote.connect(
-                  ws.connectID,
+                  ws.connectID
                 );
               } catch {
                 if (!DAYTONA_API_KEY)
                   throw new Error(
-                    "Workspace unavailable and DAYTONA_API_KEY not set to recreate.",
+                    "Workspace unavailable and DAYTONA_API_KEY not set to recreate."
                   );
                 const daytona = new Daytona({ apiKey: DAYTONA_API_KEY });
                 const token = await compute.experimental_remote.token();
@@ -596,7 +596,7 @@ agent.on("chat", async ({ messages, key, context }) => {
               const ghToken = await createInstallationToken(
                 args.owner,
                 args.repos[0],
-                args.repos,
+                args.repos
               );
               await client.request("set_env", {
                 env: { GITHUB_TOKEN: ghToken },
@@ -620,7 +620,7 @@ agent.on("chat", async ({ messages, key, context }) => {
                   state: args.state,
                   base: args.base_branch,
                   request: { signal: abortSignal },
-                },
+                }
               );
               return {
                 pull_request: {
@@ -673,7 +673,7 @@ agent.on("chat", async ({ messages, key, context }) => {
             execute: async (args: any, context: any) => {
               return (compute.tools as any).execute_bash_sync.execute(
                 args,
-                context,
+                context
               );
             },
           },
@@ -691,7 +691,7 @@ agent.on("chat", async ({ messages, key, context }) => {
               } catch (e) {
                 if (!DAYTONA_API_KEY)
                   throw new Error(
-                    "Workspace unavailable and DAYTONA_API_KEY not set to recreate.",
+                    "Workspace unavailable and DAYTONA_API_KEY not set to recreate."
                   );
                 const daytona = new Daytona({ apiKey: DAYTONA_API_KEY });
                 const token = await compute.experimental_remote.token();
@@ -707,7 +707,7 @@ agent.on("chat", async ({ messages, key, context }) => {
                 return await compute.experimental_remote.connect(token.id);
               }
             },
-          }),
+          })
         );
         if (!meta?.issueUrl && tools["jira_reply"]) {
           delete tools["jira_reply"];
@@ -721,7 +721,7 @@ agent.on("chat", async ({ messages, key, context }) => {
               has_jira_reply: !!(tools as any)["jira_reply"],
               has_jira_add_comment: !!(tools as any)["jira_add_comment"],
               jira_tool_keys: Object.keys(tools).filter((k) =>
-                k.startsWith("jira_"),
+                k.startsWith("jira_")
               ),
             });
           }
@@ -779,7 +779,7 @@ agent.on("request", async (request, context) => {
               owner,
               repo,
               number,
-            }),
+            })
           );
         } catch {}
         const text = body;
@@ -803,7 +803,7 @@ agent.on("request", async (request, context) => {
         await context.chat.message(
           chatID,
           { role: "user", parts: [{ type: "text", text: msg }] },
-          { behavior: "interrupt" },
+          { behavior: "interrupt" }
         );
         console.log("gh.enqueued", { chatId: chatID });
       } catch (err) {
@@ -822,7 +822,7 @@ agent.on("request", async (request, context) => {
         try {
           await context.store.set(
             `gh-meta-${chatID}`,
-            JSON.stringify({ kind: "pr", owner, repo, number }),
+            JSON.stringify({ kind: "pr", owner, repo, number })
           );
         } catch {}
         const text = e.payload.comment?.body || "";
@@ -846,7 +846,7 @@ agent.on("request", async (request, context) => {
         await context.chat.message(
           chatID,
           { role: "user", parts: [{ type: "text", text: msg }] },
-          { behavior: "interrupt" },
+          { behavior: "interrupt" }
         );
         console.log("gh.enqueued", { chatId: chatID });
       } catch (err) {
@@ -865,7 +865,7 @@ agent.on("request", async (request, context) => {
         try {
           await context.store.set(
             `gh-meta-${chatID}`,
-            JSON.stringify({ kind: "pr", owner, repo, number }),
+            JSON.stringify({ kind: "pr", owner, repo, number })
           );
         } catch {}
         const state = e.payload.review?.state || "";
@@ -891,7 +891,7 @@ agent.on("request", async (request, context) => {
         await context.chat.message(
           chatID,
           { role: "user", parts: [{ type: "text", text: msg }] },
-          { behavior: "interrupt" },
+          { behavior: "interrupt" }
         );
         console.log("gh.enqueued", { chatId: chatID });
       } catch (err) {
@@ -915,7 +915,7 @@ agent.on("request", async (request, context) => {
           try {
             const get = await octokit.request(
               "GET /repos/{owner}/{repo}/pulls/{pull_number}",
-              { owner, repo, pull_number: number },
+              { owner, repo, pull_number: number }
             );
             headRef = get.data.head.ref;
           } catch {}
@@ -923,7 +923,7 @@ agent.on("request", async (request, context) => {
           try {
             await context.store.set(
               `gh-meta-${chatID}`,
-              JSON.stringify({ kind: "pr", owner, repo, number }),
+              JSON.stringify({ kind: "pr", owner, repo, number })
             );
           } catch {}
           const details = [
@@ -954,7 +954,7 @@ agent.on("request", async (request, context) => {
           await context.chat.message(
             chatID,
             { role: "user", parts: [{ type: "text", text: msg }] },
-            { behavior: "interrupt" },
+            { behavior: "interrupt" }
           );
           console.log("gh.enqueued", { chatId: chatID });
         }
@@ -1033,7 +1033,7 @@ agent.on("request", async (request, context) => {
   if (!adfBody && commentId) {
     try {
       const fetched = await getJson<any>(
-        `/rest/api/3/issue/${issueKey}/comment/${commentId}`,
+        `/rest/api/3/issue/${issueKey}/comment/${commentId}`
       );
       adfBody = fetched?.body;
       if (!authorId) {
@@ -1074,14 +1074,15 @@ agent.on("request", async (request, context) => {
   const userText = adfText(adfBody).trim();
   const base = (getJiraSiteBase() || "https://example.invalid").replace(
     /\/$/,
-    "",
+    ""
   );
   const issueUrl = `${base}/browse/${issueKey}`;
 
   const chatID = `jira-${issueKey}`;
+  const chat = await context.chat.ensure(chatID);
   await context.store.set(
     `jira-meta-${chatID}`,
-    JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
+    JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null })
   );
   log("jira.meta_set", {
     reqId,
@@ -1092,7 +1093,7 @@ agent.on("request", async (request, context) => {
   try {
     await context.store.set(
       `jira-meta-jira-${issueKey}`,
-      JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
+      JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null })
     );
   } catch {}
 
@@ -1106,7 +1107,7 @@ agent.on("request", async (request, context) => {
   await context.chat.message(
     chatID,
     { role: "user", parts: [{ type: "text", text: composed }] },
-    { behavior: "interrupt" },
+    { behavior: "interrupt" }
   );
 
   log("chat_enqueued", { reqId, chatId: chatID, issueKey });
