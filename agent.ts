@@ -80,13 +80,15 @@ function getAppOctokit(): Octokit {
   if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY) {
     throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be set");
   }
+  const appId = Number(GITHUB_APP_ID);
+  const privateKey = Buffer.from(GITHUB_APP_PRIVATE_KEY!, "base64").toString(
+    "utf-8",
+  );
   return new Octokit({
     authStrategy: createAppAuth as any,
     auth: {
-      appId: Number(GITHUB_APP_ID),
-      privateKey: Buffer.from(GITHUB_APP_PRIVATE_KEY, "base64").toString(
-        "utf-8",
-      ),
+      appId,
+      privateKey,
     } as any,
   });
 }
@@ -104,13 +106,15 @@ async function getInstallationOctokit(
     })
   ).data.id;
 
+  const appId = Number(GITHUB_APP_ID!);
+  const privateKey = Buffer.from(GITHUB_APP_PRIVATE_KEY!, "base64").toString(
+    "utf-8",
+  );
   const installationOctokit = new Octokit({
     authStrategy: createAppAuth,
     auth: {
-      appId: Number(GITHUB_APP_ID),
-      privateKey: Buffer.from(GITHUB_APP_PRIVATE_KEY, "base64").toString(
-        "utf-8",
-      ),
+      appId,
+      privateKey,
       installationId,
     },
   });
@@ -494,7 +498,7 @@ blink
                   "Authenticate with Git repositories for push/pull operations from the Daytona workspace.",
                 inputSchema: z.object({
                   owner: z.string(),
-                  repos: z.array(z.string()),
+                  repos: z.array(z.string()).min(1),
                 }),
                 execute: async (args: any) => {
                   const ws = await getDaytonaWorkspace(chat.id);
