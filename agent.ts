@@ -260,10 +260,12 @@ blink
                 : "You are a Jira assistant responding in issue comments.",
             "- Be concise, direct, and helpful.",
             "- No emojis or headers.",
-            "- If unclear, ask one brief clarifying question.",
+            ghMeta?.kind
+              ? "- If unclear, ask one brief clarifying question."
+              : "- If unclear, ask one brief clarifying question via jira_reply.",
             meta?.issueUrl ? `- Issue URL: ${meta.issueUrl}` : undefined,
             meta?.issueUrl
-              ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
+              ? "- Always post your response in Jira by calling the jira_reply tool exactly once. If you need a clarifying question, ask it via jira_reply. Do not reply only in this chat."
               : undefined,
             // Jira-specific guidance: never @mention the service account. Mention only the requester (jira_reply handles this)
             !ghMeta?.kind
