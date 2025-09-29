@@ -768,7 +768,7 @@ agent.on("request", async (request, context) => {
         const isPr = !!e.payload.issue?.pull_request;
         const body = e.payload.comment?.body || "";
         if (!/\bblink\b/i.test(body)) return; // only respond when mentioned
-        const chat = await blink.chat.upsert(
+        const chat = await context.chat.upsert(
           isPr
             ? `gh-pr~${owner}~${repo}~${number}`
             : `gh-issue~${owner}~${repo}~${number}`,
@@ -802,7 +802,7 @@ agent.on("request", async (request, context) => {
           pr: number,
           by: e.payload.sender?.login,
         });
-        await blink.chat.message(
+        await context.chat.message(
           chat.id,
           { role: "user", parts: [{ type: "text", text: msg }] },
           { behavior: "interrupt" },
@@ -820,7 +820,7 @@ agent.on("request", async (request, context) => {
         const owner = e.payload.repository.owner.login;
         const repo = e.payload.repository.name;
         const number = e.payload.pull_request.number;
-        const chat = await blink.chat.upsert(
+        const chat = await context.chat.upsert(
           `gh-pr~${owner}~${repo}~${number}`,
         );
         try {
@@ -847,7 +847,7 @@ agent.on("request", async (request, context) => {
           pr: number,
           by: e.payload.sender?.login,
         });
-        await blink.chat.message(
+        await context.chat.message(
           chat.id,
           { role: "user", parts: [{ type: "text", text: msg }] },
           { behavior: "interrupt" },
@@ -865,7 +865,7 @@ agent.on("request", async (request, context) => {
         const owner = e.payload.repository.owner.login;
         const repo = e.payload.repository.name;
         const number = e.payload.pull_request.number;
-        const chat = await blink.chat.upsert(
+        const chat = await context.chat.upsert(
           `gh-pr~${owner}~${repo}~${number}`,
         );
         try {
@@ -894,7 +894,7 @@ agent.on("request", async (request, context) => {
           state,
           by: e.payload.sender?.login,
         });
-        await blink.chat.message(
+        await context.chat.message(
           chat.id,
           { role: "user", parts: [{ type: "text", text: msg }] },
           { behavior: "interrupt" },
@@ -925,7 +925,7 @@ agent.on("request", async (request, context) => {
             );
             headRef = get.data.head.ref;
           } catch {}
-          const chat = await blink.chat.upsert(
+          const chat = await context.chat.upsert(
             `gh-pr~${owner}~${repo}~${number}`,
           );
           try {
@@ -959,7 +959,7 @@ agent.on("request", async (request, context) => {
             pr: number,
             conclusion: concl,
           });
-          await blink.chat.message(
+          await context.chat.message(
             chat.id,
             { role: "user", parts: [{ type: "text", text: msg }] },
             { behavior: "interrupt" },
@@ -1086,7 +1086,7 @@ agent.on("request", async (request, context) => {
   );
   const issueUrl = `${base}/browse/${issueKey}`;
 
-  const chat = await blink.chat.upsert(`jira-${issueKey}`);
+  const chat = await context.chat.upsert(`jira-${issueKey}`);
   await context.store.set(
     `jira-meta-${chat.id}`,
     JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
@@ -1111,7 +1111,7 @@ agent.on("request", async (request, context) => {
   ]
     .filter(Boolean)
     .join("");
-  await blink.chat.message(
+  await context.chat.message(
     chat.id,
     { role: "user", parts: [{ type: "text", text: composed }] },
     { behavior: "interrupt" },
