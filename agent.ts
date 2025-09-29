@@ -200,8 +200,8 @@ blink
             text = t?.text ?? "";
           }
           const urlMatch = text.match(/ISSUE_URL:\s*(\S+)/i);
-          if (urlMatch) {
-            const issueUrl = urlMatch[1];
+          const issueUrl = urlMatch?.[1];
+          if (issueUrl) {
             let issueKey: string | undefined;
             try {
               issueKey = parseIssueKeyFromUrl(issueUrl);
