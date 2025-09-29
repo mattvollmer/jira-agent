@@ -14,7 +14,7 @@ Daytona ephemeral workspaces
 Environment variables
 
 - DAYTONA_API_KEY: Required. API key to create Daytona workspaces.
-- DAYTONA_SNAPSHOT: Required. Daytona snapshot/image identifier to use when creating workspaces.
+- DAYTONA_SNAPSHOT: Optional. Defaults to blink-workspace-august-17-2025.
 - DAYTONA_TTL_MINUTES: Optional. Auto-delete interval in minutes (default: 60).
 
 New tools
@@ -22,6 +22,11 @@ New tools
 - initialize_workspace: Creates a per-chat Daytona workspace, injects BLINK_TOKEN, and stores its identifiers.
 - workspace_authenticate_git: Generates a scoped GitHub App installation token and sets GITHUB_TOKEN inside the workspace.
 - compute.\*: All compute tools are available and run inside the connected Daytona workspace after initialization.
+
+Lifecycle
+
+- Explicit initialization required; no auto-provisioning when none exists.
+- If a previously-initialized workspace cannot be connected (e.g., expired), the agent automatically recreates it on first activity (compute or auth), preserving the explicit-init policy.
 
 Usage
 

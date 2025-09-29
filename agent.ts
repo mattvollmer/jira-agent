@@ -153,7 +153,8 @@ async function setDaytonaWorkspace(chatID: string, ws: DaytonaWorkspace) {
 }
 
 const DAYTONA_API_KEY = process.env.DAYTONA_API_KEY?.trim();
-const DAYTONA_SNAPSHOT = process.env.DAYTONA_SNAPSHOT?.trim();
+const DAYTONA_SNAPSHOT =
+  process.env.DAYTONA_SNAPSHOT?.trim() || "blink-workspace-august-17-2025";
 const DAYTONA_TTL_MINUTES = Number(process.env.DAYTONA_TTL_MINUTES ?? "60");
 
 blink
@@ -410,8 +411,6 @@ blink
                   if (existing) return "Workspace already initialized.";
                   if (!DAYTONA_API_KEY)
                     throw new Error("DAYTONA_API_KEY must be set");
-                  if (!DAYTONA_SNAPSHOT)
-                    throw new Error("DAYTONA_SNAPSHOT must be set");
                   const daytona = new Daytona({ apiKey: DAYTONA_API_KEY });
                   const token = await compute.experimental_remote.token();
                   const created = await daytona.create({
@@ -436,9 +435,31 @@ blink
                 execute: async (args: any) => {
                   const ws = await getDaytonaWorkspace(chat.id);
                   if (!ws) throw new Error("Workspace not initialized.");
-                  const client = await compute.experimental_remote.connect(
-                    ws.connectID,
-                  );
+                  let client;
+                  try {
+                    client = await compute.experimental_remote.connect(
+                      ws.connectID,
+                    );
+                  } catch {
+                    if (!DAYTONA_API_KEY)
+                      throw new Error(
+                        "Workspace unavailable and DAYTONA_API_KEY not set to recreate.",
+                      );
+                    const daytona = new Daytona({ apiKey: DAYTONA_API_KEY });
+                    const token = await compute.experimental_remote.token();
+                    const created = await daytona.create({
+                      snapshot: DAYTONA_SNAPSHOT,
+                      autoDeleteInterval: DAYTONA_TTL_MINUTES,
+                      envVars: { BLINK_TOKEN: token.token },
+                    });
+                    await setDaytonaWorkspace(chat.id, {
+                      id: created.id,
+                      connectID: token.id,
+                    });
+                    client = await compute.experimental_remote.connect(
+                      token.id,
+                    );
+                  }
                   const token = await github.authenticateApp({
                     ...getGithubAppContext(),
                     repositoryNames: args.repos,
@@ -459,7 +480,28 @@ blink
                     throw new Error(
                       "You must call 'initialize_workspace' first.",
                     );
-                  return compute.experimental_remote.connect(ws.connectID);
+                  try {
+                    return await compute.experimental_remote.connect(
+                      ws.connectID,
+                    );
+                  } catch (e) {
+                    if (!DAYTONA_API_KEY)
+                      throw new Error(
+                        "Workspace unavailable and DAYTONA_API_KEY not set to recreate.",
+                      );
+                    const daytona = new Daytona({ apiKey: DAYTONA_API_KEY });
+                    const token = await compute.experimental_remote.token();
+                    const created = await daytona.create({
+                      snapshot: DAYTONA_SNAPSHOT,
+                      autoDeleteInterval: DAYTONA_TTL_MINUTES,
+                      envVars: { BLINK_TOKEN: token.token },
+                    });
+                    await setDaytonaWorkspace(chat.id, {
+                      id: created.id,
+                      connectID: token.id,
+                    });
+                    return await compute.experimental_remote.connect(token.id);
+                  }
                 },
               }),
             );
