@@ -1103,13 +1103,36 @@ agent.on("request", async (request, context) => {
   ]
     .filter(Boolean)
     .join("");
-  await context.chat.message(
-    chatID,
-    { role: "user", parts: [{ type: "text", text: composed }] },
-    { behavior: "interrupt" },
-  );
 
-  log("chat_enqueued", { reqId, chatId: chatID, issueKey });
+  log("pre_message_call", {
+    reqId,
+    chatId: chatID,
+    issueKey,
+    hasContext: !!context,
+    hasContextChat: !!context?.chat,
+    hasContextChatMessage: !!context?.chat?.message,
+    composedLength: composed.length,
+  });
+
+  try {
+    await context.chat.message(
+      chatID,
+      { role: "user", parts: [{ type: "text", text: composed }] },
+      { behavior: "interrupt" },
+    );
+    log("chat_enqueued", { reqId, chatId: chatID, issueKey });
+  } catch (error) {
+    log("chat_message_error", {
+      reqId,
+      chatId: chatID,
+      issueKey,
+      error: error instanceof Error ? error.message : String(error),
+      errorStack: error instanceof Error ? error.stack : undefined,
+      errorType: error?.constructor?.name,
+    });
+    throw error;
+  }
+
   return new Response("OK", { status: 200 });
 });
 
