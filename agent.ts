@@ -797,7 +797,7 @@ blink
 
       requireEnv();
       const serviceAccountId = await getServiceAccountId();
-      const authorId: string | undefined =
+      let authorId: string | undefined =
         comment?.author?.accountId ?? comment?.authorId;
       const commentId: string | undefined = comment?.id ?? comment?.commentId;
 
@@ -821,6 +821,14 @@ blink
             `/rest/api/3/issue/${issueKey}/comment/${commentId}`,
           );
           adfBody = fetched?.body;
+          if (!authorId) {
+            const backfill =
+              fetched?.author?.accountId ?? fetched?.authorId ?? null;
+            if (backfill) {
+              authorId = backfill;
+              log("jira.author_backfill", { reqId, issueKey, commentId });
+            }
+          }
         } catch (e) {
           log("fetch_comment_failed", {
             reqId,
