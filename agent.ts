@@ -8,6 +8,7 @@ import {
   getJiraSiteBase,
   requireEnv,
   getJson,
+  parseIssueKeyFromUrl,
 } from "./jira";
 import type { JiraMyself } from "./jira";
 import * as github from "@blink-sdk/github";
@@ -23,6 +24,7 @@ const GITHUB_APP_INSTALLATION_ID =
   process.env.GITHUB_APP_INSTALLATION_ID?.trim();
 const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET?.trim();
 const GITHUB_BOT_LOGIN = process.env.GITHUB_BOT_LOGIN?.trim();
+const AGENT_BRANCH_PREFIX = process.env.AGENT_BRANCH_PREFIX?.trim() || "blink/";
 
 function getGithubAppContext() {
   if (
@@ -165,6 +167,14 @@ function log(event: string, data?: Record<string, unknown>) {
   } catch {}
 }
 
+function chatLog(event: string, data?: Record<string, unknown>) {
+  try {
+    console.log(
+      JSON.stringify({ level: "info", source: "jira-chat", event, ...data }),
+    );
+  } catch {}
+}
+
 async function getServiceAccountId(): Promise<string> {
   if (JIRA_SERVICE_ACCOUNT_ID) return JIRA_SERVICE_ACCOUNT_ID;
   if (cachedServiceAccountId) return cachedServiceAccountId;
@@ -225,6 +235,29 @@ const DAYTONA_SNAPSHOT =
   process.env.DAYTONA_SNAPSHOT?.trim() || "blink-workspace-august-17-2025";
 const DAYTONA_TTL_MINUTES = Number(process.env.DAYTONA_TTL_MINUTES ?? "60");
 
+function isAgentBranch(ref?: string | null): boolean {
+  if (!ref) return false;
+  return ref.startsWith(AGENT_BRANCH_PREFIX);
+}
+
+async function assertAgentPRBranch(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  pull_number: number,
+): Promise<string> {
+  const pr = await octokit.request(
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+    { owner, repo, pull_number },
+  );
+  if (!isAgentBranch(pr.data.head.ref)) {
+    throw new Error(
+      `Operation blocked: head '${pr.data.head.ref}' does not start with '${AGENT_BRANCH_PREFIX}'.`,
+    );
+  }
+  return pr.data.head.ref;
+}
+
 blink
   .agent({
     async sendMessages({ messages, chat }) {
@@ -239,6 +272,66 @@ blink
           : null;
         if (raw) meta = JSON.parse(raw);
       } catch {}
+
+      // Jira meta fallback: if KV by chat.id missing, try KV alias by issue key from message, else synthesize
+      if (!meta) {
+        try {
+          const msgs = (messages as any[]).slice().reverse();
+          const lastUser = msgs.find((m) => m?.role === "user") || {};
+          let text = "";
+          if (Array.isArray(lastUser.parts)) {
+            const t = lastUser.parts.find((p: any) => p?.type === "text");
+            text = t?.text ?? "";
+          }
+          if (!text && typeof lastUser.content === "string")
+            text = lastUser.content;
+          if (!text && Array.isArray(lastUser.content)) {
+            const t = lastUser.content.find(
+              (p: any) => typeof p?.text === "string",
+            );
+            text = t?.text ?? "";
+          }
+          const urlMatch = text.match(/ISSUE_URL:\s*(\S+)/i);
+          const issueUrl = urlMatch?.[1];
+          if (issueUrl) {
+            let issueKey: string | undefined;
+            try {
+              issueKey = parseIssueKeyFromUrl(issueUrl);
+            } catch {}
+            if (issueKey) {
+              const alias = await blink.storage.kv.get(
+                `jira-meta-jira-${issueKey}`,
+              );
+              if (alias) {
+                meta = JSON.parse(alias);
+                chatLog("jira.meta_fallback", {
+                  chatId: chat?.id,
+                  from: "kv",
+                  issueKey,
+                  issueUrl,
+                  hasAuthorId: !!(meta as any)?.authorId,
+                });
+              } else {
+                const mentionMatch = text.match(
+                  /MENTION_ACCOUNT_ID:\s*([^\s]+)/i,
+                );
+                meta = {
+                  issueKey,
+                  issueUrl,
+                  authorId: mentionMatch ? mentionMatch[1] : undefined,
+                } as any;
+                chatLog("jira.meta_fallback", {
+                  chatId: chat?.id,
+                  from: "message",
+                  issueKey,
+                  issueUrl,
+                  hasAuthorId: !!(meta as any)?.authorId,
+                });
+              }
+            }
+          }
+        } catch {}
+      }
 
       // Load GitHub metadata for this chat (if any)
       let ghMeta: null | {
@@ -314,7 +407,14 @@ blink
       } catch {}
 
       try {
-        console.log("sendMessages", { chatId: chat?.id, kind: ghMeta?.kind });
+        chatLog("sendMessages", { chatId: chat?.id, kind: ghMeta?.kind });
+        if (!ghMeta && meta?.issueUrl) {
+          chatLog("jira.meta_loaded", {
+            chatId: chat?.id,
+            issueUrl: meta.issueUrl,
+            hasAuthorId: !!meta.authorId,
+          });
+        }
       } catch {}
 
       try {
@@ -328,10 +428,12 @@ blink
                 : "You are a Jira assistant responding in issue comments.",
             "- Be concise, direct, and helpful.",
             "- No emojis or headers.",
-            "- If unclear, ask one brief clarifying question.",
+            ghMeta?.kind
+              ? "- If unclear, ask one brief clarifying question."
+              : "- If unclear, ask one brief clarifying question via jira_reply.",
             meta?.issueUrl ? `- Issue URL: ${meta.issueUrl}` : undefined,
             meta?.issueUrl
-              ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
+              ? "- Always post your response in Jira by calling the jira_reply tool exactly once. If you need a clarifying question, ask it via jira_reply. Do not reply only in this chat."
               : undefined,
             // Jira-specific guidance: never @mention the service account. Mention only the requester (jira_reply handles this)
             !ghMeta?.kind
@@ -413,13 +515,18 @@ blink
                 }),
                 "github_",
               ),
-              // Enforce draft PRs: override SDK tool with a wrapper that forces draft: true
+              // Enforce draft PRs and branch prefix on PR creation/update
               github_create_pull_request: tool({
                 description: (github as any).tools.create_pull_request
                   .description,
                 inputSchema: (github as any).tools.create_pull_request
                   .inputSchema,
                 execute: async (args: any, { abortSignal }: any) => {
+                  if (!isAgentBranch(args.head)) {
+                    throw new Error(
+                      `Branch '${args.head}' must start with '${AGENT_BRANCH_PREFIX}'.`,
+                    );
+                  }
                   const octokit = await getOctokit();
                   const response = await octokit.request(
                     "POST /repos/{owner}/{repo}/pulls",
@@ -539,6 +646,70 @@ blink
                   return { ok: true };
                 },
               }),
+              github_update_pull_request: tool({
+                description: (github as any).tools.update_pull_request
+                  .description,
+                inputSchema: (github as any).tools.update_pull_request
+                  .inputSchema,
+                execute: async (args: any, { abortSignal }: any) => {
+                  const octokit = await getOctokit();
+                  await assertAgentPRBranch(
+                    octokit,
+                    args.owner,
+                    args.repo,
+                    args.pull_number,
+                  );
+                  const response = await octokit.request(
+                    "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+                    {
+                      owner: args.owner,
+                      repo: args.repo,
+                      pull_number: args.pull_number,
+                      title: args.title,
+                      body: args.body,
+                      state: args.state,
+                      base: args.base_branch,
+                      request: { signal: abortSignal },
+                    },
+                  );
+                  return {
+                    pull_request: {
+                      number: response.data.number,
+                      comments: response.data.comments,
+                      title: response.data.title ?? "",
+                      body: response.data.body ?? "",
+                      state: response.data.state as "open" | "closed",
+                      created_at: response.data.created_at,
+                      updated_at: response.data.updated_at,
+                      user: { login: response.data.user?.login ?? "" },
+                      head: {
+                        ref: response.data.head.ref,
+                        sha: response.data.head.sha,
+                      },
+                      base: {
+                        ref: response.data.base.ref,
+                        sha: response.data.base.sha,
+                      },
+                      additions: response.data.additions,
+                      deletions: response.data.deletions,
+                      changed_files: response.data.changed_files,
+                      review_comments: response.data.review_comments,
+                      closed_at: response.data.closed_at ?? undefined,
+                      merged_at: response.data.merged_at ?? undefined,
+                      merge_commit_sha:
+                        response.data.merge_commit_sha ?? undefined,
+                      merged_by: response.data.merged_by
+                        ? {
+                            login: response.data.merged_by.login,
+                            avatar_url:
+                              response.data.merged_by.avatar_url ?? "",
+                            html_url: response.data.merged_by.html_url ?? "",
+                          }
+                        : undefined,
+                    },
+                  };
+                },
+              }),
             };
             Object.assign(
               tools,
@@ -577,6 +748,20 @@ blink
             if (!meta?.issueUrl && tools["jira_reply"]) {
               delete tools["jira_reply"];
             }
+            try {
+              if (!ghMeta && meta?.issueUrl) {
+                // Force deterministic posting: remove generic comment tool in Jira-context
+                if ((tools as any)["jira_add_comment"])
+                  delete (tools as any)["jira_add_comment"];
+                chatLog("jira.tools", {
+                  has_jira_reply: !!(tools as any)["jira_reply"],
+                  has_jira_add_comment: !!(tools as any)["jira_add_comment"],
+                  jira_tool_keys: Object.keys(tools).filter((k) =>
+                    k.startsWith("jira_"),
+                  ),
+                });
+              }
+            } catch {}
             return tools as any;
           })(),
         });
@@ -775,6 +960,17 @@ blink
               const owner = e.payload.repository.owner.login;
               const repo = e.payload.repository.name;
               const number = pr.number;
+              // Only act on agent-owned branches
+              const octokit = await getOctokit();
+              let headRef: string | undefined;
+              try {
+                const get = await octokit.request(
+                  "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+                  { owner, repo, pull_number: number },
+                );
+                headRef = get.data.head.ref;
+              } catch {}
+              if (!isAgentBranch(headRef)) continue;
               const chat = await blink.chat.upsert(
                 `gh-pr~${owner}~${repo}~${number}`,
               );
@@ -870,7 +1066,7 @@ blink
 
       requireEnv();
       const serviceAccountId = await getServiceAccountId();
-      const authorId: string | undefined =
+      let authorId: string | undefined =
         comment?.author?.accountId ?? comment?.authorId;
       const commentId: string | undefined = comment?.id ?? comment?.commentId;
 
@@ -894,6 +1090,14 @@ blink
             `/rest/api/3/issue/${issueKey}/comment/${commentId}`,
           );
           adfBody = fetched?.body;
+          if (!authorId) {
+            const backfill =
+              fetched?.author?.accountId ?? fetched?.authorId ?? null;
+            if (backfill) {
+              authorId = backfill;
+              log("jira.author_backfill", { reqId, issueKey, commentId });
+            }
+          }
         } catch (e) {
           log("fetch_comment_failed", {
             reqId,
@@ -906,6 +1110,14 @@ blink
 
       const hasMention =
         !!adfBody && adfContainsMention(adfBody, serviceAccountId);
+      log("jira.context", {
+        reqId,
+        issueKey,
+        commentId,
+        authorId,
+        self_author: !!authorId && authorId === serviceAccountId,
+        hasMention,
+      });
       if (!adfBody || !hasMention) {
         log("no_action", {
           reqId,
@@ -926,6 +1138,24 @@ blink
         `jira-meta-${chat.id}`,
         JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
       );
+      log("jira.meta_set", {
+        reqId,
+        chatId: chat.id,
+        issueKey,
+        issueUrl,
+        hasAuthorId: !!authorId,
+      });
+      // Also write alias by external chat key to handle id mismatches
+      try {
+        await blink.storage.kv.set(
+          `jira-meta-jira-${issueKey}`,
+          JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
+        );
+        log("jira.meta_alias_set", {
+          reqId,
+          aliasKey: `jira-meta-jira-${issueKey}`,
+        });
+      } catch {}
 
       const composed = [
         userText,
