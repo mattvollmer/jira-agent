@@ -8,6 +8,7 @@ import {
   getJiraSiteBase,
   requireEnv,
   getJson,
+  parseIssueKeyFromUrl,
 } from "./jira";
 import type { JiraMyself } from "./jira";
 import * as github from "@blink-sdk/github";
@@ -179,6 +180,66 @@ blink
           : null;
         if (raw) meta = JSON.parse(raw);
       } catch {}
+
+      // Jira meta fallback: if KV by chat.id missing, try KV alias by issue key from message, else synthesize
+      if (!meta) {
+        try {
+          const msgs = (messages as any[]).slice().reverse();
+          const lastUser = msgs.find((m) => m?.role === "user") || {};
+          let text = "";
+          if (Array.isArray(lastUser.parts)) {
+            const t = lastUser.parts.find((p: any) => p?.type === "text");
+            text = t?.text ?? "";
+          }
+          if (!text && typeof lastUser.content === "string")
+            text = lastUser.content;
+          if (!text && Array.isArray(lastUser.content)) {
+            const t = lastUser.content.find(
+              (p: any) => typeof p?.text === "string",
+            );
+            text = t?.text ?? "";
+          }
+          const urlMatch = text.match(/ISSUE_URL:\s*(\S+)/i);
+          if (urlMatch) {
+            const issueUrl = urlMatch[1];
+            let issueKey: string | undefined;
+            try {
+              issueKey = parseIssueKeyFromUrl(issueUrl);
+            } catch {}
+            if (issueKey) {
+              const alias = await blink.storage.kv.get(
+                `jira-meta-jira-${issueKey}`,
+              );
+              if (alias) {
+                meta = JSON.parse(alias);
+                chatLog("jira.meta_fallback", {
+                  chatId: chat?.id,
+                  from: "kv",
+                  issueKey,
+                  issueUrl,
+                  hasAuthorId: !!(meta as any)?.authorId,
+                });
+              } else {
+                const mentionMatch = text.match(
+                  /MENTION_ACCOUNT_ID:\s*([^\s]+)/i,
+                );
+                meta = {
+                  issueKey,
+                  issueUrl,
+                  authorId: mentionMatch ? mentionMatch[1] : undefined,
+                } as any;
+                chatLog("jira.meta_fallback", {
+                  chatId: chat?.id,
+                  from: "message",
+                  issueKey,
+                  issueUrl,
+                  hasAuthorId: !!(meta as any)?.authorId,
+                });
+              }
+            }
+          }
+        } catch {}
+      }
 
       // Load GitHub metadata for this chat (if any)
       let ghMeta: null | {
@@ -495,6 +556,9 @@ blink
             }
             try {
               if (!ghMeta && meta?.issueUrl) {
+                // Force deterministic posting: remove generic comment tool in Jira-context
+                if ((tools as any)["jira_add_comment"])
+                  delete (tools as any)["jira_add_comment"];
                 chatLog("jira.tools", {
                   has_jira_reply: !!(tools as any)["jira_reply"],
                   has_jira_add_comment: !!(tools as any)["jira_add_comment"],
@@ -887,6 +951,17 @@ blink
         issueUrl,
         hasAuthorId: !!authorId,
       });
+      // Also write alias by external chat key to handle id mismatches
+      try {
+        await blink.storage.kv.set(
+          `jira-meta-jira-${issueKey}`,
+          JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
+        );
+        log("jira.meta_alias_set", {
+          reqId,
+          aliasKey: `jira-meta-jira-${issueKey}`,
+        });
+      } catch {}
 
       const composed = [
         userText,
