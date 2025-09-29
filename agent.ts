@@ -768,14 +768,12 @@ agent.on("request", async (request, context) => {
         const isPr = !!e.payload.issue?.pull_request;
         const body = e.payload.comment?.body || "";
         if (!/\bblink\b/i.test(body)) return; // only respond when mentioned
-        const chat = await context.chat.upsert(
-          isPr
-            ? `gh-pr~${owner}~${repo}~${number}`
-            : `gh-issue~${owner}~${repo}~${number}`,
-        );
+        const chatID = isPr
+          ? `gh-pr~${owner}~${repo}~${number}`
+          : `gh-issue~${owner}~${repo}~${number}`;
         try {
           await context.store.set(
-            `gh-meta-${chat.id}`,
+            `gh-meta-${chatID}`,
             JSON.stringify({
               kind: isPr ? "pr" : "issue",
               owner,
@@ -803,11 +801,11 @@ agent.on("request", async (request, context) => {
           by: e.payload.sender?.login,
         });
         await context.chat.message(
-          chat.id,
+          chatID,
           { role: "user", parts: [{ type: "text", text: msg }] },
           { behavior: "interrupt" },
         );
-        console.log("gh.enqueued", { chatId: chat.id });
+        console.log("gh.enqueued", { chatId: chatID });
       } catch (err) {
         console.error("issue_comment handler error", err);
       }
@@ -820,12 +818,10 @@ agent.on("request", async (request, context) => {
         const owner = e.payload.repository.owner.login;
         const repo = e.payload.repository.name;
         const number = e.payload.pull_request.number;
-        const chat = await context.chat.upsert(
-          `gh-pr~${owner}~${repo}~${number}`,
-        );
+        const chatID = `gh-pr~${owner}~${repo}~${number}`;
         try {
           await context.store.set(
-            `gh-meta-${chat.id}`,
+            `gh-meta-${chatID}`,
             JSON.stringify({ kind: "pr", owner, repo, number }),
           );
         } catch {}
@@ -848,11 +844,11 @@ agent.on("request", async (request, context) => {
           by: e.payload.sender?.login,
         });
         await context.chat.message(
-          chat.id,
+          chatID,
           { role: "user", parts: [{ type: "text", text: msg }] },
           { behavior: "interrupt" },
         );
-        console.log("gh.enqueued", { chatId: chat.id });
+        console.log("gh.enqueued", { chatId: chatID });
       } catch (err) {
         console.error("pull_request_review_comment handler error", err);
       }
@@ -865,12 +861,10 @@ agent.on("request", async (request, context) => {
         const owner = e.payload.repository.owner.login;
         const repo = e.payload.repository.name;
         const number = e.payload.pull_request.number;
-        const chat = await context.chat.upsert(
-          `gh-pr~${owner}~${repo}~${number}`,
-        );
+        const chatID = `gh-pr~${owner}~${repo}~${number}`;
         try {
           await context.store.set(
-            `gh-meta-${chat.id}`,
+            `gh-meta-${chatID}`,
             JSON.stringify({ kind: "pr", owner, repo, number }),
           );
         } catch {}
@@ -895,11 +889,11 @@ agent.on("request", async (request, context) => {
           by: e.payload.sender?.login,
         });
         await context.chat.message(
-          chat.id,
+          chatID,
           { role: "user", parts: [{ type: "text", text: msg }] },
           { behavior: "interrupt" },
         );
-        console.log("gh.enqueued", { chatId: chat.id });
+        console.log("gh.enqueued", { chatId: chatID });
       } catch (err) {
         console.error("pull_request_review handler error", err);
       }
@@ -925,12 +919,10 @@ agent.on("request", async (request, context) => {
             );
             headRef = get.data.head.ref;
           } catch {}
-          const chat = await context.chat.upsert(
-            `gh-pr~${owner}~${repo}~${number}`,
-          );
+          const chatID = `gh-pr~${owner}~${repo}~${number}`;
           try {
             await context.store.set(
-              `gh-meta-${chat.id}`,
+              `gh-meta-${chatID}`,
               JSON.stringify({ kind: "pr", owner, repo, number }),
             );
           } catch {}
@@ -960,11 +952,11 @@ agent.on("request", async (request, context) => {
             conclusion: concl,
           });
           await context.chat.message(
-            chat.id,
+            chatID,
             { role: "user", parts: [{ type: "text", text: msg }] },
             { behavior: "interrupt" },
           );
-          console.log("gh.enqueued", { chatId: chat.id });
+          console.log("gh.enqueued", { chatId: chatID });
         }
       } catch (err) {
         console.error("check_run.completed handler error", err);
@@ -1086,14 +1078,14 @@ agent.on("request", async (request, context) => {
   );
   const issueUrl = `${base}/browse/${issueKey}`;
 
-  const chat = await context.chat.upsert(`jira-${issueKey}`);
+  const chatID = `jira-${issueKey}`;
   await context.store.set(
-    `jira-meta-${chat.id}`,
+    `jira-meta-${chatID}`,
     JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
   );
   log("jira.meta_set", {
     reqId,
-    chatId: chat.id,
+    chatId: chatID,
     issueKey,
     hasAuthorId: !!authorId,
   });
@@ -1112,12 +1104,12 @@ agent.on("request", async (request, context) => {
     .filter(Boolean)
     .join("");
   await context.chat.message(
-    chat.id,
+    chatID,
     { role: "user", parts: [{ type: "text", text: composed }] },
     { behavior: "interrupt" },
   );
 
-  log("chat_enqueued", { reqId, chatId: chat.id, issueKey });
+  log("chat_enqueued", { reqId, chatId: chatID, issueKey });
   return new Response("OK", { status: 200 });
 });
 
