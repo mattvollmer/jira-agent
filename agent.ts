@@ -247,6 +247,13 @@ blink
 
       try {
         console.log("sendMessages", { chatId: chat?.id, kind: ghMeta?.kind });
+        if (!ghMeta && meta?.issueUrl) {
+          console.log("jira.meta_loaded", {
+            chatId: chat?.id,
+            issueUrl: meta.issueUrl,
+            hasAuthorId: !!meta.authorId,
+          });
+        }
       } catch {}
 
       try {
@@ -479,12 +486,12 @@ blink
               delete tools["jira_reply"];
             }
             try {
-              const keys = Object.keys(tools).sort();
-              console.log("tools.available", { count: keys.length, keys });
-              console.log(
-                "tools.has.github_create_issue_comment",
-                !!tools["github_create_issue_comment"],
-              );
+              if (!ghMeta && meta?.issueUrl) {
+                console.log("jira.tools", {
+                  has_jira_reply: !!(tools as any)["jira_reply"],
+                  has_jira_add_comment: !!(tools as any)["jira_add_comment"],
+                });
+              }
             } catch {}
             return tools as any;
           })(),
@@ -826,6 +833,14 @@ blink
 
       const hasMention =
         !!adfBody && adfContainsMention(adfBody, serviceAccountId);
+      log("jira.context", {
+        reqId,
+        issueKey,
+        commentId,
+        authorId,
+        self_author: !!authorId && authorId === serviceAccountId,
+        hasMention,
+      });
       if (!adfBody || !hasMention) {
         log("no_action", {
           reqId,
@@ -846,6 +861,13 @@ blink
         `jira-meta-${chat.id}`,
         JSON.stringify({ issueKey, issueUrl, authorId: authorId ?? null }),
       );
+      log("jira.meta_set", {
+        reqId,
+        chatId: chat.id,
+        issueKey,
+        issueUrl,
+        hasAuthorId: !!authorId,
+      });
 
       const composed = [
         userText,
