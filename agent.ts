@@ -403,6 +403,7 @@ blink
                 : "You are a Jira assistant responding in issue comments.",
             "- Be concise, direct, and helpful.",
             "- No emojis or headers.",
+            "- IMPORTANT: Always prefix new branches with 'blink/' (e.g., 'blink/fix-bug', 'blink/add-feature'). Only modify or work with branches that begin with 'blink/'.",
             ghMeta?.kind
               ? "- If unclear, ask one brief clarifying question."
               : "- If unclear, ask one brief clarifying question via jira_reply.",
