@@ -220,6 +220,10 @@ blink
             meta?.issueUrl
               ? "- Always deliver your final answer by calling the jira_reply tool exactly once with your final text."
               : undefined,
+            // Jira-specific guidance: never mention the service account to avoid loops
+            !ghMeta?.kind
+              ? "- Never @mention the service account. Mention only the requester (jira_reply already handles this)."
+              : undefined,
             ghMeta?.kind === "pr"
               ? `- GitHub PR: ${ghMeta.owner}/${ghMeta.repo} #${ghMeta.number}`
               : ghMeta?.kind === "issue"
@@ -615,6 +619,12 @@ blink
             error: (e as Error)?.message,
           });
         }
+      }
+
+      // Ignore comments authored by the service account to prevent loops
+      if (authorId && authorId === serviceAccountId) {
+        log("no_action", { reqId, reason: "self_author" });
+        return new Response("OK", { status: 200 });
       }
 
       const hasMention =
