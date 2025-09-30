@@ -118,6 +118,19 @@ export async function postJson<T>(path: string, body: any): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * Add an emoji reaction as a comment to acknowledge that the agent is working
+ */
+export async function addEmojiReaction(issueKey: string): Promise<void> {
+  try {
+    const emojiComment = buildAdfComment("👀", undefined);
+    await postJson<any>(`/rest/api/3/issue/${issueKey}/comment`, emojiComment);
+  } catch (error) {
+    // Don't let emoji reaction failures stop the main flow
+    console.error("Failed to add emoji reaction:", error);
+  }
+}
+
 export async function putJson<T>(path: string, body: any): Promise<T> {
   requireEnv();
   const url = joinApi(path);

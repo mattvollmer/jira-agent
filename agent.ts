@@ -9,6 +9,7 @@ import {
   requireEnv,
   getJson,
   parseIssueKeyFromUrl,
+  addEmojiReaction,
 } from "./jira";
 import type { JiraMyself } from "./jira";
 import * as github from "@blink-sdk/github";
@@ -1070,6 +1071,10 @@ agent.on("request", async (request, context) => {
     });
     return new Response("OK", { status: 200 });
   }
+
+  // Add emoji reaction to acknowledge the mention before processing
+  log("jira.emoji_reaction", { reqId, issueKey });
+  await addEmojiReaction(issueKey);
 
   const userText = adfText(adfBody).trim();
   const base = (getJiraSiteBase() || "https://example.invalid").replace(
