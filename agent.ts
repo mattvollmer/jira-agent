@@ -9,6 +9,7 @@ import {
   requireEnv,
   getJson,
   parseIssueKeyFromUrl,
+  addCommentReaction,
 } from "./jira";
 import type { JiraMyself } from "./jira";
 import * as github from "@blink-sdk/github";
@@ -1069,6 +1070,31 @@ agent.on("request", async (request, context) => {
       reason: !adfBody ? "no_body" : "no_mention",
     });
     return new Response("OK", { status: 200 });
+  }
+
+  // Add an emoji reaction to acknowledge the mention
+  if (commentId) {
+    // Choose a random creative emoji to keep it fun and engaging
+    const emojiOptions = [
+      "eyes",      // 👀 - "I see you!"
+      "rocket",    // 🚀 - "On it!"
+      "fire",      // 🔥 - "Hot on the trail!"
+      "brain",     // 🧠 - "Thinking about it!"
+      "sparkles", // ✨ - "Magic happening!"
+    ];
+    const randomEmoji = emojiOptions[Math.floor(Math.random() * emojiOptions.length)];
+    
+    // Fire and forget - don't wait for the reaction to complete
+    addCommentReaction(issueKey, commentId, randomEmoji).catch((err) => {
+      log("emoji_reaction_failed", {
+        reqId,
+        issueKey,
+        commentId,
+        emoji: randomEmoji,
+        error: err?.message,
+      });
+    });
+    log("emoji_reaction_added", { reqId, issueKey, commentId, emoji: randomEmoji });
   }
 
   const userText = adfText(adfBody).trim();
