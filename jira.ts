@@ -130,6 +130,31 @@ export async function putJson<T>(path: string, body: any): Promise<T> {
   return (await res.json().catch(() => ({}))) as T;
 }
 
+/**
+ * Add an emoji reaction to a Jira comment
+ * Available emoji reactions: thumbsup, thumbsdown, heart, fire, star, clap, eyes, thinking, check
+ */
+export async function addCommentReaction(
+  issueKey: string,
+  commentId: string,
+  emojiId: string
+): Promise<void> {
+  requireEnv();
+  const path = `/rest/api/3/comment/${commentId}/reactions`;
+  const url = joinApi(path);
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ emojiId }),
+  });
+  if (!res.ok) {
+    // Log but don't throw - reactions are non-critical
+    console.warn(
+      `Failed to add reaction to comment ${commentId}: ${res.status} ${await res.text()}`
+    );
+  }
+}
+
 export function stripHtml(html?: string): string {
   if (!html) return "";
   return html
